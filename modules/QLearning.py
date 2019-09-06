@@ -45,7 +45,7 @@ class QLearning(object):
                  n_gpu=1, gpu_rank=1,
                  gpu_verbose_level=0, model_saver=None,
                  average_decay=0, average_every=1, model_dtype='fp32',
-                 earlystopper=None, dropout=[0.3], dropout_steps=[0]):
+                 earlystopper=None): # dropout=[0.3], dropout_steps=[0]
 
         # RL attributes
         self.config = config
@@ -71,19 +71,21 @@ class QLearning(object):
         self.average_every = average_every
         self.model_dtype = model_dtype
         self.earlystopper = earlystopper
-        self.dropout = dropout
-        self.dropout_steps = dropout_steps
+        
+        # NOTE: Dropout isn't usually used with RL, see https://ai.stackexchange.com/questions/8293/why-do-you-not-see-dropout-layers-on-reinforcement-learning-examples
+        #self.dropout = dropout
+        #self.dropout_steps = dropout_steps
 
         # Set model in training mode.
         self.current_model.train()
         self.target_model.train()
 
-    def _maybe_update_dropout(self, step):
-        for i in range(len(self.dropout_steps)):
-            if step > 1 and step == self.dropout_steps[i] + 1:
-                self.current_model.update_dropout(self.dropout[i])
-                logger.info("Updated dropout to %f from step %d"
-                            % (self.dropout[i], step))
+    #def _maybe_update_dropout(self, step):
+    #    for i in range(len(self.dropout_steps)):
+    #        if step > 1 and step == self.dropout_steps[i] + 1:
+    #            self.current_model.update_dropout(self.dropout[i])
+    #            logger.info("Updated dropout to %f from step %d"
+    #                        % (self.dropout[i], step))
 
     def _update_average(self, step):
         if self.moving_average is None:
@@ -120,7 +122,7 @@ class QLearning(object):
 
         for i in range(100): # TODO: Parametrize iterations
             step = self.optim.training_step
-            self._maybe_update_dropout(step) # UPDATE DROPOUT
+            #self._maybe_update_dropout(step) # UPDATE DROPOUT | NOTE: Dropout isn't usually used with RL
             
             batch = self.model.sample_from_memory(step)
             normalization = self.config.BATCH_SIZE
@@ -231,8 +233,8 @@ class QLearning(object):
         true_batch, src, tgt, src_lengths, src_raw, tgt_raw, per = self._process_batch(batch)
         target_size = tgt.size(0)     
         
-        self.current_model.eval()
         with torch.no_grad(): # TODO: Maybe start with some iterations without inference
+            self.current_model.update_noise()
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
             for i, prediction in enumerate(predictions):
                 print(prediction)
@@ -240,7 +242,9 @@ class QLearning(object):
                     self.replay_memory.push(src_raw[i], prediction[0].unsqueeze(1), 1) # TODO: Reward
                 else:
                     logger.info(f"Inference {i}: No output sentence generated (just </s>)") # TODO: Maybe include them with high negative reward?
-        self.current_model.train()
+        
+        self.current_model.update_noise()
+        self.target_model.update_noise()
             
         # pass through encoder and decoder
         bptt = False
@@ -283,7 +287,7 @@ class QLearning(object):
         weights = None
         if self.model.replay_type == 'per':
             weights, idxes = per
-            priorities = (masked_current_net_q_values - expected_q_values).detach().abs().sum(dim=0).squeeze().cpu().tolist()  
+            priorities = (masked_current_net_q_values - expected_q_values).detach().abs().sum(dim=0).squeeze().cpu().tolist() # TODO: Maybe mean instead of sum for priorities
             self.replay_memory.update_priorities(idxes, priorities)
             
         #logger.info(current_net_q_values.size())

@@ -17,22 +17,24 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         
         self.config = c = config
-        self.encoder_embeddings = onmt.modules.Embeddings(c.emb_size, c.src_vocab_size, word_padding_idx=c.src_padding)
+        self.encoder_embeddings = onmt.modules.Embeddings(c.emb_size, c.src_vocab_size, word_padding_idx=c.src_padding, dropout=0)
         self.encoder = onmt.encoders.RNNEncoder(
             hidden_size=c.rnn_size,
             num_layers=num_layers,
             rnn_type=rnn_type,
             bidirectional=bidirectional,
-            embeddings=self.encoder_embeddings
+            embeddings=self.encoder_embeddings,
+            dropout=0.0,
         )
         
-        self.decoder_embeddings = onmt.modules.Embeddings(c.emb_size, c.tgt_vocab_size, word_padding_idx=c.tgt_padding)
+        self.decoder_embeddings = onmt.modules.Embeddings(c.emb_size, c.tgt_vocab_size, word_padding_idx=c.tgt_padding, dropout=0)
         self.decoder = onmt.decoders.decoder.InputFeedRNNDecoder(
             hidden_size=c.rnn_size,
             num_layers=num_layers,
             bidirectional_encoder=bidirectional, 
             rnn_type=rnn_type,
-            embeddings=self.decoder_embeddings
+            embeddings=self.decoder_embeddings,
+            dropout=0.0,
         )
         
         self.generator = NoisyLinear(c.rnn_size, c.tgt_vocab_size) # nn.Sequential
@@ -122,7 +124,11 @@ class DQN(nn.Module):
         # returns [(batch_size x beam_size) , vocab ] when 1 step
         # or [ tgt_len, batch_size, vocab ] when full sentence
         return log_probs, attn
-
-    def update_dropout(self, dropout):
-        self.encoder.update_dropout(dropout)
-        self.decoder.update_dropout(dropout)
+        
+    def update_noise(self):
+        self.generator.sample_noise()
+        
+    # NOTE: Dropout isn't usually used with RL, see https://ai.stackexchange.com/questions/8293/why-do-you-not-see-dropout-layers-on-reinforcement-learning-examples
+    #def update_dropout(self, dropout):
+    #    self.encoder.update_dropout(dropout)
+    #    self.decoder.update_dropout(dropout)
