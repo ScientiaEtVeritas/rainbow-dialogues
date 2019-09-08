@@ -56,7 +56,7 @@ class DQN(nn.Module):
             
     def _translate_random_sampling(self, src, src_lengths, batch_size, min_length=0, sampling_temp=1.0, keep_topk=1, return_attention=False):
 
-        max_length = self.config.max_sequence_length
+        max_length = self.config.max_sequence_length + 2 # to account for BOS and EOS
         
         # Encoder forward.
         enc_states, memory_bank, src_lengths = self.encoder(src, src_lengths)

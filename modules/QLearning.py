@@ -6,7 +6,7 @@ import onmt.utils
 
 import logging
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 from torch.nn.utils.rnn import pad_sequence
 import torchtext
@@ -120,8 +120,9 @@ class QLearning(object):
         """
         logging.info('Start training loop and validate every %d steps...', valid_steps)
 
-        for i in range(100): # TODO: Parametrize iterations
+        for i in range(train_steps):
             step = self.optim.training_step
+            logger.info("Step " + str(step))
             #self._maybe_update_dropout(step) # UPDATE DROPOUT | NOTE: Dropout isn't usually used with RL
             
             batch = self.model.sample_from_memory(step)
@@ -131,6 +132,9 @@ class QLearning(object):
             #    logger.info("GpuRank %d: index: %d", self.gpu_rank, i)
             #if self.gpu_verbose_level > 0:
             #    logger.info("GpuRank %d: reduce_counter: %d" % (self.gpu_rank, i + 1))
+            
+            if step > self.config.PRETRAIN_ITER:
+                self._sample()
 
             self._step(batch, normalization)
 
@@ -227,22 +231,29 @@ class QLearning(object):
         true_batch.tgt = tgt
         true_batch.lengths = src_lengths
 
-        return true_batch, src, tgt, src_lengths, src_raw, tgt_raw, per
-
-    def _step(self, batch, normalization):
-        true_batch, src, tgt, src_lengths, src_raw, tgt_raw, per = self._process_batch(batch)
-        target_size = tgt.size(0)     
-        
-        with torch.no_grad(): # TODO: Maybe start with some iterations without inference
+        return true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per
+    
+    def _sample(self):
+        logger.info("Sampling: Collecting new data")
+        batch = self.model.sample_buffer.sample(self.config.BATCH_SIZE)
+        true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
+        with torch.no_grad():
             self.current_model.update_noise()
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
+            rewards = self.reward(src_raw, predictions, tgt_raw)
             for i, prediction in enumerate(predictions):
-                print(prediction)
                 if prediction[0].size(0) > 1:
-                    self.replay_memory.push(src_raw[i], prediction[0].unsqueeze(1), 1) # TODO: Reward
+                    print(' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction[0]]) + f' ({rewards[i]})')
+                    prediction_raw = prediction[0].unsqueeze(1)
+                    idx = self.replay_memory.push(src_raw[i], prediction_raw, rewards[i]) # TODO: Reward
+                    logger.info(f"Using / Replacing Index {idx}")
                 else:
-                    logger.info(f"Inference {i}: No output sentence generated (just </s>)") # TODO: Maybe include them with high negative reward?
-        
+                    logger.debug(f"Inference {i}: No output sentence generated (just </s>)") # TODO: Maybe include them with high negative reward?
+
+    def _step(self, batch, normalization):
+        true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
+        target_size = tgt.size(0)     
+                
         self.current_model.update_noise()
         self.target_model.update_noise()
             
@@ -264,25 +275,45 @@ class QLearning(object):
         next_q_values = self.model.get_next_q_values(current_net_q_outputs, target_net_q_outputs)
 
         #print(current_net_q_values[0][:5])
+        
+        #print("REWARDS", reward)
+        
+        
+        # construct reward tensor
+        tgt_is_eos = (tgt == self.config.tgt_eos)
+        cond = (tgt_is_eos.sum(dim=0) == 0).squeeze().type(torch.ByteTensor)
+        other = tgt_is_eos[-1].squeeze().type(torch.FloatTensor)
+        terminal_reward = torch.where(cond, torch.ones((tgt_is_eos.size(1))), other)
+        tgt_is_eos[-1] = terminal_reward.view(tgt_is_eos.size(1), 1)
+        rewards = (tgt_is_eos.type(torch.FloatTensor) * torch.Tensor(reward).view(tgt_is_eos.size(1), 1))[1:]
+        
+        #print("CURRENT", current_net_q_values.size())
+        #print("REWARDS", rewards.size())
 
         # get rewards
-        rewards = torch.ones_like(current_net_q_values) # TODO: Reward 
+        #rewards = torch.ones_like(current_net_q_values)
+        #print(rewards.size())
 
         # mask bc padding
-        mask = torch.zeros_like(tgt).masked_scatter_((tgt != 1), torch.ones_like(tgt))[1:].type(torch.FloatTensor)
-        mask_q_value = mask[-1]
-        mask_q_value_final = mask[-1]  
+        mask = torch.zeros_like(tgt).masked_scatter_((tgt != self.config.tgt_padding), torch.ones_like(tgt))[1:].type(torch.FloatTensor)
+        #mask_q_value = mask[-1]
+        #mask_q_value_final = mask[-1]  
 
         masked_current_net_q_values = current_net_q_values * mask
         #masked_next_q_values = next_q_values * mask[1:]
         masked_next_q_values = torch.cat([next_q_values * mask[1:],torch.zeros((1,self.config.BATCH_SIZE,1))]) # add zeros for final state
-        masked_rewards = rewards * mask
+        #masked_rewards = rewards * mask
+        #print(rewards.sum(), "versus", masked_rewards.sum())
+        #if rewards.sum() != masked_rewards.sum():
+        #    print("DOENST MATCH :((((")
+        #    print(rewards.sum(dim=0), "versus", masked_rewards.sum(dim=0))
+        #    print(tgt)
 
         # calculate expected q values
         #expected_q_value = masked_rewards[:-1] + masked_current_net_q_values[:-1] + self.config.GAMMA * masked_next_q_values
         #expected_q_value_final = masked_rewards[-1] + masked_current_net_q_values[-1]
 
-        expected_q_values = masked_rewards + self.config.GAMMA * masked_next_q_values 
+        expected_q_values = rewards + self.config.GAMMA * masked_next_q_values 
         
         weights = None
         if self.model.replay_type == 'per':

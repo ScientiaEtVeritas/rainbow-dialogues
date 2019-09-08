@@ -22,9 +22,10 @@ class Model(object):
         
     def declare_memory(self):
         if self.replay_type == "er":
-            self.replay_memory = ReplayBuffer(1000)
+            self.replay_memory = ReplayBuffer(self.config.EXP_REPLAY_SIZE, preloading_size = self.config.PRELOADING_SIZE)
         elif self.replay_type == "per":
-            self.replay_memory = PrioritizedReplayBuffer(1000, alpha = self.config.PER_ALPHA)
+            self.replay_memory = PrioritizedReplayBuffer(self.config.EXP_REPLAY_SIZE, preloading_size = self.config.PRELOADING_SIZE, alpha = self.config.PER_ALPHA)
+        self.sample_buffer = ReplayBuffer(self.config.PRELOADING_SIZE) # not used for actual experience replay, but for collecting new experiences
             
     def sample_from_memory(self, step):
         if self.replay_type == "er":

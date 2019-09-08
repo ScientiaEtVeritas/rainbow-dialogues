@@ -145,7 +145,7 @@ class MinSegmentTree(SegmentTree):
 
 
 class ReplayBuffer(object):
-    def __init__(self, size):
+    def __init__(self, size, preloading_size = 0):
         """Create Replay buffer.
         Parameters
         ----------
@@ -153,12 +153,23 @@ class ReplayBuffer(object):
             Max number of transitions to store in the buffer. When the buffer
             overflows the old memories are dropped.
         """
+        
+        assert preloading_size < size
+        
         self._storage = []
         self._maxsize = size
-        self._next_idx = 0
+        self._preloading_size = preloading_size
+        self._next_idx = preloading_size
 
     def __len__(self):
         return len(self._storage)
+    
+    def preload(self, src, tgt, reward):
+        
+        assert len(self._storage) <= self._preloading_size
+        
+        data = (src, tgt, reward)
+        self._storage.append(data)
 
     def push(self, src, tgt, reward):
         data = (src, tgt, reward)
@@ -167,7 +178,7 @@ class ReplayBuffer(object):
             self._storage.append(data)
         else:
             self._storage[self._next_idx] = data
-        self._next_idx = (self._next_idx + 1) % self._maxsize
+        self._next_idx = self._preloading_size + ((self._next_idx + 1 - self._preloading_size) % (self._maxsize - self._preloading_size))
 
     def _encode_sample(self, idxes):
         transitions = []
@@ -175,9 +186,6 @@ class ReplayBuffer(object):
             data = self._storage[i]
             src, tgt, reward = data
             transitions.append((src, tgt, reward))
-            #srcs.append(src) #srcs.append(np.array(src, copy=False))
-            #tgts.append(tgt) #(np.array(tgt, copy=False))
-            #rewards.append(reward) #np.array(reward, copy=False))
         return transitions
 
     def sample(self, batch_size):
@@ -205,7 +213,7 @@ class ReplayBuffer(object):
 
 
 class PrioritizedReplayBuffer(ReplayBuffer):
-    def __init__(self, size, alpha):
+    def __init__(self, size, preloading_size, alpha):
         """Create Prioritized Replay buffer.
         Parameters
         ----------
@@ -219,7 +227,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         --------
         ReplayBuffer.__init__
         """
-        super(PrioritizedReplayBuffer, self).__init__(size)
+        super(PrioritizedReplayBuffer, self).__init__(size, preloading_size)
         assert alpha > 0
         self._alpha = alpha
 
@@ -230,6 +238,12 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self._it_sum = SumSegmentTree(it_capacity)
         self._it_min = MinSegmentTree(it_capacity)
         self._max_priority = 1.0
+        
+    def preload(self, *args, **kwargs):
+        super(PrioritizedReplayBuffer, self).preload(*args, **kwargs)
+        idx = len(self._storage) - 1
+        self._it_sum[idx] = self._max_priority ** self._alpha
+        self._it_min[idx] = self._max_priority ** self._alpha
 
     def push(self, *args, **kwargs):
         """See ReplayBuffer.store_effect"""
@@ -237,6 +251,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         super(PrioritizedReplayBuffer, self).push(*args, **kwargs)
         self._it_sum[idx] = self._max_priority ** self._alpha
         self._it_min[idx] = self._max_priority ** self._alpha
+        return idx
 
     def _sample_proportional(self, batch_size):
         res = []
