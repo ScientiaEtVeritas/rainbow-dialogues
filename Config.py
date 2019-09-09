@@ -14,6 +14,7 @@ class Config(object):
         
         # DQN
         self.target_update_freq = 20
+        self.DUELING = True
         
         # Replay Memory
         self.EXP_REPLAY_SIZE = 1000

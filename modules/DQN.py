@@ -8,6 +8,35 @@ from onmt.translate.random_sampling import RandomSampling
 
 from NoisyLinear import NoisyLinear
 
+class Generator(nn.Module):
+    def __init__(self, rnn_size, tgt_vocab_size, dueling = False):
+        super(Generator, self).__init__()
+        
+        self.rnn_size = rnn_size
+        self.tgt_vocab_size = tgt_vocab_size
+        self.dueling = dueling
+        
+        if self.dueling:
+            self.advantages = NoisyLinear(rnn_size, tgt_vocab_size)
+            self.value = NoisyLinear(rnn_size, 1)
+        else:
+            self.q_values = NoisyLinear(rnn_size, tgt_vocab_size)
+            
+    def forward(self, x):
+        if self.dueling:
+            adv = self.advantages(x)
+            val = self.value(x)            
+            return val + (adv - adv.mean(dim=-1, keepdim=True))
+        else:
+            return self.q_values(x)  
+        
+    def sample_noise(self):
+        if self.dueling:
+            self.advantages.sample_noise()
+            self.value.sample_noise()
+        else:
+            self.q_values.sample_noise()
+
 class DQN(nn.Module):
     def __init__(self,
                  config,
@@ -37,7 +66,7 @@ class DQN(nn.Module):
             dropout=0.0,
         )
         
-        self.generator = NoisyLinear(c.rnn_size, c.tgt_vocab_size) # nn.Sequential
+        self.generator = Generator(c.rnn_size, c.tgt_vocab_size, c.DUELING)
                 
     def forward(self, src, tgt, lengths, bptt = False):
         if self.training: # Training with teacher forcing

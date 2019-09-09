@@ -153,8 +153,8 @@ class ReplayBuffer(object):
             Max number of transitions to store in the buffer. When the buffer
             overflows the old memories are dropped.
         """
-        
-        assert preloading_size < size
+
+        assert preloading_size <= size
         
         self._storage = []
         self._maxsize = size
