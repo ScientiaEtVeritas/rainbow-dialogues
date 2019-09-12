@@ -224,7 +224,7 @@ class QLearning(object):
         tgt = pad_sequence(tgt_raw, padding_value=self.config.tgt_padding)
         src_lengths = torch.ShortTensor([s.size(0) for s in src_raw])
 
-        logger.info("Batch Length: " + str(src_lengths))
+        logger.debug("Batch Length: " + str(src_lengths))
 
         true_batch = torchtext.data.Batch()
         true_batch.src = src
@@ -240,15 +240,17 @@ class QLearning(object):
         with torch.no_grad():
             self.current_model.update_noise()
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
-            rewards = self.reward(src_raw, predictions, tgt_raw)
+            rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
             for i, prediction in enumerate(predictions):
-                if prediction[0].size(0) > 1:
-                    print(' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction[0]]) + f' ({rewards[i]})')
-                    prediction_raw = prediction[0].unsqueeze(1)
-                    idx = self.replay_memory.push(src_raw[i], prediction_raw, rewards[i]) # TODO: Reward
-                    logger.info(f"Using / Replacing Index {idx}")
+                prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]), prediction[0]))
+                if prediction_with_bos.size(0) > 1:
+                    prediction_with_bos = prediction_with_bos.unsqueeze(1)
+                    if self.optim.training_step % self.config.REPORT_SAMPLE_EVERY == 0:
+                        print(' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})')
+                    idx = self.replay_memory.push(src_raw[i], prediction_with_bos, rewards[i])
+                    logger.debug(f"Using / Replacing Index {idx}")
                 else:
-                    logger.debug(f"Inference {i}: No output sentence generated (just </s>)") # TODO: Maybe include them with high negative reward?
+                    logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
 
     def _step(self, batch, normalization):
         true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
@@ -342,7 +344,7 @@ class QLearning(object):
                 normalization=normalization,
                 shard_size=self.shard_size)
             
-            logger.info(loss)
+            logger.debug(loss)
 
             if loss is not None: # maybe already backwarded in train_loss
                 self.optim.backward(loss)

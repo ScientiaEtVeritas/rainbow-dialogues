@@ -15,12 +15,28 @@ class Generator(nn.Module):
         self.rnn_size = rnn_size
         self.tgt_vocab_size = tgt_vocab_size
         self.dueling = dueling
+        self.noisy_layers = []
         
         if self.dueling:
-            self.advantages = NoisyLinear(rnn_size, tgt_vocab_size)
-            self.value = NoisyLinear(rnn_size, 1)
+            advantages_nl1 = NoisyLinear(rnn_size, tgt_vocab_size)
+            advantages_nl2 = NoisyLinear(tgt_vocab_size, tgt_vocab_size)
+            self.advantages = nn.Sequential(
+                advantages_nl1,
+                nn.ReLU(),
+                advantages_nl2
+            )
+
+            value_nl1 = NoisyLinear(rnn_size, rnn_size)
+            value_nl2 = NoisyLinear(rnn_size, 1)
+            self.value = nn.Sequential(
+                value_nl1,
+                nn.ReLU(),
+                value_nl2
+            )
+            self.noisy_layers = [advantages_nl1, advantages_nl2, value_nl2, value_nl2]
         else:
             self.q_values = NoisyLinear(rnn_size, tgt_vocab_size)
+            self.noisy_layers = [self.q_values]
             
     def forward(self, x):
         if self.dueling:
@@ -31,11 +47,8 @@ class Generator(nn.Module):
             return self.q_values(x)  
         
     def sample_noise(self):
-        if self.dueling:
-            self.advantages.sample_noise()
-            self.value.sample_noise()
-        else:
-            self.q_values.sample_noise()
+        for noisy_layer in self.noisy_layers:
+            noisy_layer.sample_noise()
 
 class DQN(nn.Module):
     def __init__(self,
@@ -85,7 +98,7 @@ class DQN(nn.Module):
             
     def _translate_random_sampling(self, src, src_lengths, batch_size, min_length=0, sampling_temp=1.0, keep_topk=1, return_attention=False):
 
-        max_length = self.config.max_sequence_length + 2 # to account for BOS and EOS
+        max_length = self.config.max_sequence_length + 1 # to account for EOS
         
         # Encoder forward.
         enc_states, memory_bank, src_lengths = self.encoder(src, src_lengths)
