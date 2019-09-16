@@ -13,12 +13,13 @@ class Config(object):
         self.rnn_size = 500
         
         # DQN
-        self.target_update_freq = 1000
+        self.target_update_freq = 8000 # 10^4 to 10^6
         self.DUELING = True
         
         # Replay Memory
-        self.EXP_REPLAY_SIZE = 2000000
-        self.PRETRAIN_ITER = 5000
+        self.replay_type = "per"
+        self.EXP_REPLAY_SIZE = 1000000 # Memory size 1M transitions
+        self.PRETRAIN_ITER = 0
         
         # PER
         self.PER_ALPHA = 0.6 # The exponent α determines how much prioritization is used, with α = 0 corresponding to the uniform case.
@@ -31,7 +32,10 @@ class Config(object):
         self.BATCH_SIZE = 32
 
         #data logging parameters
-        self.REPORT_SAMPLE_EVERY = 20
+        self.REPORT_SAMPLE_EVERY = 100
+        self.SAVE_SIGMA_EVERY = 500
+        self.SAVE_TD_EVERY = 100
+        self.SAVE_GRAD_FLOW_EVERY = 250
         self.ACTION_SELECTION_COUNT_FREQUENCY = 1000 # TODO:
 
 config = Config()

@@ -11,6 +11,13 @@ logger.setLevel(logging.INFO)
 from torch.nn.utils.rnn import pad_sequence
 import torchtext
 
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+
+import os
+import csv
+
 class QLearning(object):
     """
     Class that controls the training process.
@@ -241,6 +248,7 @@ class QLearning(object):
             self.current_model.update_noise()
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
             rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
+            self.model.save_reward(rewards.sum().item(), self.optim.training_step)
             for i, prediction in enumerate(predictions):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
@@ -271,15 +279,8 @@ class QLearning(object):
         target_net_q_outputs = self.model.target_model.generator(target_net_outputs).detach() # detach from graph, don't backpropagate
 
         # calc q values
-        current_net_q_values = self.model.get_current_q_values(current_net_q_outputs, tgt)
-        #target_net_q_values = self.model.get_current_q_values(target_net_q_outputs, tgt)
-
+        current_net_q_values = self.model.get_current_q_values(current_net_q_outputs, tgt)        
         next_q_values = self.model.get_next_q_values(current_net_q_outputs, target_net_q_outputs)
-
-        #print(current_net_q_values[0][:5])
-        
-        #print("REWARDS", reward)
-        
         
         # construct reward tensor
         tgt_is_eos = (tgt == self.config.tgt_eos)
@@ -289,31 +290,14 @@ class QLearning(object):
         tgt_is_eos[-1] = terminal_reward.view(tgt_is_eos.size(1), 1)
         rewards = (tgt_is_eos.type(torch.FloatTensor) * torch.Tensor(reward).view(tgt_is_eos.size(1), 1))[1:]
         
-        #print("CURRENT", current_net_q_values.size())
-        #print("REWARDS", rewards.size())
-
-        # get rewards
-        #rewards = torch.ones_like(current_net_q_values)
-        #print(rewards.size())
-
         # mask bc padding
-        mask = torch.zeros_like(tgt).masked_scatter_((tgt != self.config.tgt_padding), torch.ones_like(tgt))[1:].type(torch.FloatTensor)
-        #mask_q_value = mask[-1]
-        #mask_q_value_final = mask[-1]  
+        mask = torch.ones_like(tgt)
+        for eos_token in (tgt == self.config.tgt_eos).nonzero():
+            mask[eos_token[0]+1:,eos_token[1]] = 0
+        mask = mask[1:].type(torch.FloatTensor)
 
         masked_current_net_q_values = current_net_q_values * mask
-        #masked_next_q_values = next_q_values * mask[1:]
         masked_next_q_values = torch.cat([next_q_values * mask[1:],torch.zeros((1,self.config.BATCH_SIZE,1))]) # add zeros for final state
-        #masked_rewards = rewards * mask
-        #print(rewards.sum(), "versus", masked_rewards.sum())
-        #if rewards.sum() != masked_rewards.sum():
-        #    print("DOENST MATCH :((((")
-        #    print(rewards.sum(dim=0), "versus", masked_rewards.sum(dim=0))
-        #    print(tgt)
-
-        # calculate expected q values
-        #expected_q_value = masked_rewards[:-1] + masked_current_net_q_values[:-1] + self.config.GAMMA * masked_next_q_values
-        #expected_q_value_final = masked_rewards[-1] + masked_current_net_q_values[-1]
 
         expected_q_values = rewards + self.config.GAMMA * masked_next_q_values 
         
@@ -322,25 +306,16 @@ class QLearning(object):
             weights, idxes = per
             priorities = (masked_current_net_q_values - expected_q_values).detach().abs().sum(dim=0).squeeze().cpu().tolist() # TODO: Maybe mean instead of sum for priorities
             self.replay_memory.update_priorities(idxes, priorities)
+            weights = torch.Tensor(weights)
             
-        #logger.info(current_net_q_values.size())
-        #logger.info(next_q_values.size())
-        #logger.info(masked_current_net_q_values.size())
-        #logger.info(masked_next_q_values.size())
-        #logger.info(expected_q_values.size())
-        #logger.info(expected_q_value_final.size())
-
-       # return (current_net_q_values, next_q_values, masked_current_net_q_values,
-       # masked_next_q_values, expected_q_value, expected_q_value_final, expected_q_values, expected_q_values_x)
-
-        # 3. Compute loss.
+        # Compute loss (TD-Error)
         try:
             # loss, batch_stats
             loss = self.train_loss(
                 true_batch,
                 masked_current_net_q_values,
                 expected_q_values,
-                weights=torch.Tensor(weights),
+                weights=weights,
                 normalization=normalization,
                 shard_size=self.shard_size)
             
@@ -348,6 +323,13 @@ class QLearning(object):
 
             if loss is not None: # maybe already backwarded in train_loss
                 self.optim.backward(loss)
+                if self.optim.training_step % self.config.SAVE_GRAD_FLOW_EVERY == 0:
+                    self.grad_flow(self.current_model.named_parameters(), self.optim.training_step)
+            
+            if self.optim.training_step % self.config.SAVE_SIGMA_EVERY == 0:
+                self.model.save_sigma_param_magnitudes(self.optim.training_step)
+            if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
+                self.model.save_td(loss.item(), self.optim.training_step)
 
         except Exception:
             traceback.print_exc()
@@ -361,3 +343,39 @@ class QLearning(object):
 
         if self.current_model.decoder.state is not None:
             self.current_model.decoder.detach_state()
+            
+    def grad_flow(self, named_parameters, tstep, plot = False):
+        '''Plots the gradients flowing through different layers in the net during training.
+        Can be used for checking for possible gradient vanishing / exploding problems.
+        
+        Usage: Plug this function in Trainer class after loss.backwards() as 
+        "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+        ave_grads = []
+        max_grads= []
+        layers = []
+        for n, p in named_parameters:
+            if(p.requires_grad) and ("bias" not in n):
+                layers.append(n)
+                mean_grad = p.grad.abs().mean()
+                max_grad = p.grad.abs().max()
+                ave_grads.append(mean_grad)
+                max_grads.append(max_grad)
+                with open(os.path.join('logs', 'grad_flow.csv'), 'a') as f:
+                    writer = csv.writer(f)
+                    writer.writerow((tstep, n, mean_grad, max_grad))
+
+        if plot:
+            plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
+            plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
+            plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
+            plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+            plt.xlim(left=0, right=len(ave_grads))
+            plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
+            plt.xlabel("Layers")
+            plt.ylabel("average gradient")
+            plt.title("Gradient flow")
+            plt.grid(True)
+            plt.legend([matplotlib.lines.Line2D([0], [0], color="c", lw=4),
+                        matplotlib.lines.Line2D([0], [0], color="b", lw=4),
+                        matplotlib.lines.Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
+            plt.show()

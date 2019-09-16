@@ -2,13 +2,16 @@ from modules.ReplayBuffer import ReplayBuffer
 from modules.ReplayBuffer import PrioritizedReplayBuffer
 
 import torch
+import os
+import csv
+import numpy as np
 
 class Model(object):
-    def __init__(self, config, network, replay_type = 'per'):
+    def __init__(self, config, network):
         self.config = config
         self.network = network
         self.device = 'cpu'
-        self.replay_type = replay_type
+        self.replay_type = config.replay_type
         
         self.declare_networks()
         self.declare_memory()
@@ -52,7 +55,33 @@ class Model(object):
         return q_values
     
     def get_next_q_values(self, current_net_q_outputs, target_net_q_outputs):
-        current_net_next_q_outputs = current_net_q_outputs[1:]
-        target_net_next_q_outputs = target_net_q_outputs[1:]
-        next_q_values = target_net_next_q_outputs.gather(2, torch.max(current_net_next_q_outputs, 2)[1].unsqueeze(2)) # decorrelate select and max
-        return next_q_values
+        if current_net_q_outputs.size(0) > 1:
+            current_net_next_q_outputs = current_net_q_outputs[1:]
+            target_net_next_q_outputs = target_net_q_outputs[1:]
+            next_q_values = target_net_next_q_outputs.gather(2, torch.max(current_net_next_q_outputs, 2)[1].unsqueeze(2)) # decorrelate select and max
+            return next_q_values
+        else: # all sequences are final after one transition, so there is no "next q value" for any of them 
+            return torch.zeros((0,self.config.BATCH_SIZE,1))
+        
+    def save_sigma_param_magnitudes(self, tstep):
+        with torch.no_grad():
+            sum_, count = 0.0, 0.0
+            for name, param in self.current_model.named_parameters():
+                if param.requires_grad and 'sigma' in name:
+                    sum_+= torch.sum(param.abs()).item()
+                    count += np.prod(param.shape)
+            
+            if count > 0:
+                with open(os.path.join('logs', 'sig_param_mag.csv'), 'a') as f:
+                    writer = csv.writer(f)
+                    writer.writerow((tstep, sum_/count))   
+
+    def save_td(self, td, tstep):
+        with open(os.path.join('logs', 'td.csv'), 'a') as f:
+            writer = csv.writer(f)
+            writer.writerow((tstep, td))
+
+    def save_reward(self, reward, tstep):
+        with open(os.path.join('logs', 'reward.csv'), 'a') as f:
+            writer = csv.writer(f)
+            writer.writerow((tstep, reward))
