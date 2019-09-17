@@ -110,8 +110,7 @@ class QLearning(object):
 
     def train(self,
               train_steps,
-              save_checkpoint_steps=5000,
-              valid_steps=10000):
+              save_checkpoint_steps=5000):
         """
         The main training loop by iterating over `train_iter` and possibly
         running validation on `valid_iter`.
@@ -125,7 +124,7 @@ class QLearning(object):
         Returns:
             The gathered statistics.
         """
-        logging.info('Start training loop and validate every %d steps...', valid_steps)
+        logging.info('Start training loop')
 
         for i in range(train_steps):
             step = self.optim.training_step
@@ -253,8 +252,10 @@ class QLearning(object):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
-                    if self.optim.training_step % self.config.REPORT_SAMPLE_EVERY == 0:
-                        print(' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})')
+                    if self.optim.training_step % self.config.SAVE_SAMPLE_EVERY == 0:
+                        text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})'
+                        self.model.save_sample(text, self.optim.training_step)
+                        #print(text)
                     idx = self.replay_memory.push(src_raw[i], prediction_with_bos, rewards[i])
                     logger.debug(f"Using / Replacing Index {idx}")
                 else:

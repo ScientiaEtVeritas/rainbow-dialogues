@@ -6,7 +6,7 @@ import onmt.modules
 
 from onmt.translate.random_sampling import RandomSampling
 
-from NoisyLinear import NoisyLinear
+from modules.NoisyLinear import NoisyLinear
 
 class Generator(nn.Module):
     def __init__(self, rnn_size, tgt_vocab_size, dueling = False):

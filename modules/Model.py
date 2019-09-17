@@ -10,7 +10,6 @@ class Model(object):
     def __init__(self, config, network):
         self.config = config
         self.network = network
-        self.device = 'cpu'
         self.replay_type = config.replay_type
         
         self.declare_networks()
@@ -20,8 +19,8 @@ class Model(object):
         self.current_model = self.network(self.config)
         self.target_model  = self.network(self.config)
         self.update_target()
-        self.current_model = self.current_model.to(self.device)
-        self.target_model.to(self.device)
+        self.current_model.to(self.config.device)
+        self.target_model.to(self.config.device)
         
     def declare_memory(self):
         if self.replay_type == "er":
@@ -34,7 +33,6 @@ class Model(object):
         if self.replay_type == "er":
             return self.replay_memory.sample(self.config.BATCH_SIZE)
         elif self.replay_type == "per":
-            print("BETA", self.beta_by_step(step))
             return self.replay_memory.sample(self.config.BATCH_SIZE, self.beta_by_step(step))
 
     def beta_by_step(self, step):
@@ -85,3 +83,8 @@ class Model(object):
         with open(os.path.join('logs', 'reward.csv'), 'a') as f:
             writer = csv.writer(f)
             writer.writerow((tstep, reward))
+            
+    def save_sample(self, sample, tstep):
+        with open(os.path.join('logs', 'sample.csv'), 'a') as f:
+            writer = csv.writer(f)
+            writer.writerow((tstep, sample))
