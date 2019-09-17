@@ -1,22 +1,20 @@
-from copy import deepcopy
-import torch
-import traceback
-
-import onmt.utils
-
+import csv
 import logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-from torch.nn.utils.rnn import pad_sequence
-import torchtext
+import os
+import time
+import traceback
+from copy import deepcopy
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import onmt.utils
+import torch
+import torchtext
+from torch.nn.utils.rnn import pad_sequence
 
-import os
-import csv
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 class QLearning(object):
     """
@@ -139,7 +137,7 @@ class QLearning(object):
             #if self.gpu_verbose_level > 0:
             #    logger.info("GpuRank %d: reduce_counter: %d" % (self.gpu_rank, i + 1))
             
-            if step > self.config.PRETRAIN_ITER:
+            if step > self.config.PRETRAIN_ITER and step % self.config.SAMPLE_EVERY == 0:
                 self._sample()
 
             self._step(batch, normalization)
@@ -226,9 +224,9 @@ class QLearning(object):
         batch = sorted(batch, key = lambda t: t[0].size(0), reverse = True)
         src_raw, tgt_raw, reward, *per = zip(*batch)
 
-        src = pad_sequence(src_raw, padding_value=self.config.src_padding)
-        tgt = pad_sequence(tgt_raw, padding_value=self.config.tgt_padding)
-        src_lengths = torch.ShortTensor([s.size(0) for s in src_raw])
+        src = pad_sequence(src_raw, padding_value=self.config.src_padding).to(self.config.device)
+        tgt = pad_sequence(tgt_raw, padding_value=self.config.tgt_padding).to(self.config.device)
+        src_lengths = torch.ShortTensor([s.size(0) for s in src_raw]).to(self.config.device)
 
         logger.debug("Batch Length: " + str(src_lengths))
 
@@ -249,7 +247,7 @@ class QLearning(object):
             rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
             self.model.save_reward(rewards.sum().item(), self.optim.training_step)
             for i, prediction in enumerate(predictions):
-                prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]), prediction[0]))
+                prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
                     if self.optim.training_step % self.config.SAVE_SAMPLE_EVERY == 0:
@@ -282,23 +280,23 @@ class QLearning(object):
         # calc q values
         current_net_q_values = self.model.get_current_q_values(current_net_q_outputs, tgt)        
         next_q_values = self.model.get_next_q_values(current_net_q_outputs, target_net_q_outputs)
-        
+                
         # construct reward tensor
         tgt_is_eos = (tgt == self.config.tgt_eos)
-        cond = (tgt_is_eos.sum(dim=0) == 0).squeeze().type(torch.ByteTensor)
-        other = tgt_is_eos[-1].squeeze().type(torch.FloatTensor)
-        terminal_reward = torch.where(cond, torch.ones((tgt_is_eos.size(1))), other)
+        cond = (tgt_is_eos.sum(dim=0) == 0).squeeze().byte()
+        other = tgt_is_eos[-1].squeeze().float()
+        terminal_reward = torch.where(cond, torch.ones((tgt_is_eos.size(1)), device=self.config.device), other)
         tgt_is_eos[-1] = terminal_reward.view(tgt_is_eos.size(1), 1)
-        rewards = (tgt_is_eos.type(torch.FloatTensor) * torch.Tensor(reward).view(tgt_is_eos.size(1), 1))[1:]
+        rewards = (tgt_is_eos.float() * torch.Tensor(reward).to(self.config.device).view(tgt_is_eos.size(1), 1))[1:]
         
         # mask bc padding
-        mask = torch.ones_like(tgt)
+        mask = torch.ones_like(tgt, device=self.config.device)
         for eos_token in (tgt == self.config.tgt_eos).nonzero():
             mask[eos_token[0]+1:,eos_token[1]] = 0
-        mask = mask[1:].type(torch.FloatTensor)
+        mask = mask[1:].float()
 
         masked_current_net_q_values = current_net_q_values * mask
-        masked_next_q_values = torch.cat([next_q_values * mask[1:],torch.zeros((1,self.config.BATCH_SIZE,1))]) # add zeros for final state
+        masked_next_q_values = torch.cat([next_q_values * mask[1:],torch.zeros((1,self.config.BATCH_SIZE,1), device=self.config.device)]) # add zeros for final state
 
         expected_q_values = rewards + self.config.GAMMA * masked_next_q_values 
         
@@ -307,7 +305,7 @@ class QLearning(object):
             weights, idxes = per
             priorities = (masked_current_net_q_values - expected_q_values).detach().abs().sum(dim=0).squeeze().cpu().tolist() # TODO: Maybe mean instead of sum for priorities
             self.replay_memory.update_priorities(idxes, priorities)
-            weights = torch.Tensor(weights)
+            weights = torch.Tensor(weights).to(self.config.device)
             
         # Compute loss (TD-Error)
         try:

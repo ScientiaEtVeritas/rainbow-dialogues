@@ -21,6 +21,7 @@ class Config(object):
         self.replay_type = "per" # options: er, per
         self.EXP_REPLAY_SIZE = 1000000 # Memory size 1M transitions
         self.PRETRAIN_ITER = 0
+        self.SAMPLE_EVERY = 1
         
         # PER
         self.PER_ALPHA = 0.6 # The exponent α determines how much prioritization is used, with α = 0 corresponding to the uniform case.

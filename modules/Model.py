@@ -59,7 +59,7 @@ class Model(object):
             next_q_values = target_net_next_q_outputs.gather(2, torch.max(current_net_next_q_outputs, 2)[1].unsqueeze(2)) # decorrelate select and max
             return next_q_values
         else: # all sequences are final after one transition, so there is no "next q value" for any of them 
-            return torch.zeros((0,self.config.BATCH_SIZE,1))
+            return torch.zeros((0,self.config.BATCH_SIZE,1), device=self.config.device)
         
     def save_sigma_param_magnitudes(self, tstep):
         with torch.no_grad():

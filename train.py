@@ -11,7 +11,7 @@ from modules.RLModelSaver import RLModelSaver
 from modules.QLearning import QLearning
 
 
-vocab_fields = torch.load("../data/cornell_raw_min_1000_tok.vocab.pt")
+vocab_fields = torch.load("data/cornell_raw_min_1000_tok.vocab.pt")
 
 src_text_field = vocab_fields["src"].base_field
 src_vocab = src_text_field.vocab
@@ -32,7 +32,7 @@ config.tgt_unk = tgt_vocab.stoi[tgt_text_field.unk_token]
 config.tgt_bos = tgt_vocab.stoi[tgt_text_field.init_token]
 config.tgt_eos = tgt_vocab.stoi[tgt_text_field.eos_token]
 
-train_data_file = "../data/cornell_raw_min_1000_tok.train.0.pt"
+train_data_file = "data/cornell_raw_min_1000_tok.train.0.pt"
 train_iter = onmt.inputters.inputter.DatasetLazyIter(dataset_paths=[train_data_file],
                                                      fields=vocab_fields,
                                                      batch_size=1,
