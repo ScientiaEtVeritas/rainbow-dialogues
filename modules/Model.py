@@ -73,18 +73,8 @@ class Model(object):
                 with open(os.path.join('logs', 'sig_param_mag.csv'), 'a') as f:
                     writer = csv.writer(f)
                     writer.writerow((tstep, sum_/count))   
-
-    def save_td(self, td, tstep):
-        with open(os.path.join('logs', 'td.csv'), 'a') as f:
-            writer = csv.writer(f)
-            writer.writerow((tstep, td))
-
-    def save_reward(self, reward, tstep):
-        with open(os.path.join('logs', 'reward.csv'), 'a') as f:
-            writer = csv.writer(f)
-            writer.writerow((tstep, reward))
             
-    def save_sample(self, sample, tstep):
-        with open(os.path.join('logs', 'sample.csv'), 'a') as f:
+    def save(self, type_, value, tstep):
+        with open(os.path.join('logs', type_ + '.csv'), 'a') as f:
             writer = csv.writer(f)
-            writer.writerow((tstep, sample))
+            writer.writerow((tstep, value))

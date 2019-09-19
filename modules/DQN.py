@@ -53,7 +53,6 @@ class Generator(nn.Module):
 class DQN(nn.Module):
     def __init__(self,
                  config,
-                 rnn_type="LSTM",
                  num_layers = 1,
                  bidirectional=True):
         super(DQN, self).__init__()
@@ -63,7 +62,7 @@ class DQN(nn.Module):
         self.encoder = onmt.encoders.RNNEncoder(
             hidden_size=c.rnn_size,
             num_layers=num_layers,
-            rnn_type=rnn_type,
+            rnn_type=c.rnn_type,
             bidirectional=bidirectional,
             embeddings=self.encoder_embeddings,
             dropout=0.0,
@@ -74,7 +73,7 @@ class DQN(nn.Module):
             hidden_size=c.rnn_size,
             num_layers=num_layers,
             bidirectional_encoder=bidirectional, 
-            rnn_type=rnn_type,
+            rnn_type=c.rnn_type,
             embeddings=self.decoder_embeddings,
             dropout=0.0,
         )

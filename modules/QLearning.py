@@ -1,5 +1,6 @@
 import csv
 import logging
+import math
 import os
 import time
 import traceback
@@ -10,6 +11,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import onmt.utils
 import torch
+import torch.nn.functional as F
+import torch.nn as nn
 import torchtext
 from torch.nn.utils.rnn import pad_sequence
 
@@ -71,15 +74,18 @@ class QLearning(object):
         self.gpu_rank = gpu_rank
         self.gpu_verbose_level = gpu_verbose_level
         self.model_saver = model_saver
-        self.average_decay = average_decay
-        self.moving_average = None
-        self.average_every = average_every
         self.model_dtype = model_dtype
-        self.earlystopper = earlystopper
         
         # NOTE: Dropout isn't usually used with RL, see https://ai.stackexchange.com/questions/8293/why-do-you-not-see-dropout-layers-on-reinforcement-learning-examples
         #self.dropout = dropout
         #self.dropout_steps = dropout_steps
+        
+        self.kernel = torch.cat((
+            torch.zeros((self.config.N_STEPS - 1)),
+            torch.logspace(start=0,end=config.N_STEPS-1,steps=config.N_STEPS, base=0.99))
+        ).view(1, 1, -1).to(self.config.device)
+        
+        self.padding = int(math.ceil(self.kernel.size(2) - 1) / 2)
 
         # Set model in training mode.
         self.current_model.train()
@@ -91,20 +97,32 @@ class QLearning(object):
     #            self.current_model.update_dropout(self.dropout[i])
     #            logger.info("Updated dropout to %f from step %d"
     #                        % (self.dropout[i], step))
+                    
+    def pretrain(self,
+              train_steps,
+              save_checkpoint_steps=5000):
+        
+        self.pretrain_generator = nn.Sequential(
+            nn.Linear(self.config.rnn_size, self.config.tgt_vocab_size),
+            nn.LogSoftmax(dim=-1)).to(self.config.device)
+        
+        self.pretrain_loss = onmt.utils.loss.NMTLossCompute(
+            criterion=nn.NLLLoss(ignore_index=self.config.tgt_padding, reduction="sum"),
+            generator=self.pretrain_generator)
+        
+        lr = 1
+        self.pretrain_optim = onmt.utils.optimizers.Optimizer(
+            torch.optim.SGD(self.current_model.parameters(), lr=lr), learning_rate=lr, max_grad_norm=2)
+        
+        logging.info('Start training loop')
 
-    def _update_average(self, step):
-        if self.moving_average is None:
-            copy_params = [params.detach().float()
-                           for params in self.current_model.parameters()]
-            self.moving_average = copy_params
-        else:
-            average_decay = max(self.average_decay,
-                                1 - (step + 1)/(step + 10))
-            for (i, avg), cpt in zip(enumerate(self.moving_average),
-                                     self.current_model.parameters()):
-                self.moving_average[i] = \
-                    (1 - average_decay) * avg + \
-                    cpt.detach().float() * average_decay
+        for i in range(train_steps):
+            step = self.pretrain_optim.training_step
+            logger.info("Step " + str(step))
+            batch = self.model.sample_buffer.sample(self.config.BATCH_SIZE)
+            normalization = self.config.BATCH_SIZE
+            self._pretrain_step(batch, normalization)
+
 
     def train(self,
               train_steps,
@@ -146,78 +164,14 @@ class QLearning(object):
                 logger.info("Target Model Updated")
                 self.model.update_target()
 
-            if self.average_decay > 0 and i % self.average_every == 0:
-                self._update_average(step)
-
-            #if valid_iter is not None and step % valid_steps == 0:
-            #    if self.gpu_verbose_level > 0:
-            #        logger.info('GpuRank %d: validate step %d'
-            #                    % (self.gpu_rank, step))
-            #    valid_stats = self.validate(
-            #        valid_iter, moving_average=self.moving_average)
-            #    if self.gpu_verbose_level > 0:
-            #        logger.info('GpuRank %d: gather valid stat \
-            #                    step %d' % (self.gpu_rank, step))
-            #    valid_stats = self._maybe_gather_stats(valid_stats)
-
-                # Run patience mechanism
-                if self.earlystopper is not None:
-                    self.earlystopper(valid_stats, step)
-                    # If the patience has reached the limit, stop training
-                    if self.earlystopper.has_stopped():
-                        break
-
             if (self.model_saver is not None and (save_checkpoint_steps != 0 and step % save_checkpoint_steps == 0)):
-                self.model_saver.save(step, moving_average=self.moving_average)
+                self.model_saver.save(step)
 
             if train_steps > 0 and step >= train_steps:
                 break
 
         if self.model_saver is not None:
-            self.model_saver.save(step, moving_average=self.moving_average)
-        #return total_stats
-
-    def validate(self, valid_iter, moving_average=None):
-        """ Validate model.
-            valid_iter: validate data iterator
-        Returns:
-            :obj:`nmt.Statistics`: validation loss statistics
-        """
-        if moving_average:
-            valid_model = deepcopy(self.current_model)
-            for avg, param in zip(self.moving_average,
-                                  valid_model.parameters()):
-                param.data = avg.data
-        else:
-            valid_model = self.current_model
-
-        # Set model in validating mode.
-        valid_model.eval()
-
-        with torch.no_grad():
-            stats = onmt.utils.Statistics()
-
-            for batch in valid_iter:
-                src, src_lengths = batch.src if isinstance(batch.src, tuple) \
-                                   else (batch.src, None)
-                tgt = batch.tgt
-
-                # F-prop through the model.
-                outputs, attns = valid_model(src, tgt, src_lengths)
-
-                # Compute loss.
-                _, batch_stats = self.valid_loss(batch, outputs, attns)
-
-                # Update statistics.
-                stats.update(batch_stats)
-
-        if moving_average:
-            del valid_model
-        else:
-            # Set model back to training mode.
-            valid_model.train()
-
-        return stats
+            self.model_saver.save(step)
 
     def _process_batch(self, batch):
 
@@ -245,37 +199,65 @@ class QLearning(object):
             self.current_model.update_noise()
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
             rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
-            self.model.save_reward(rewards.sum().item(), self.optim.training_step)
+            self.model.save('reward', rewards.sum().item(), self.optim.training_step)
             for i, prediction in enumerate(predictions):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
                     if self.optim.training_step % self.config.SAVE_SAMPLE_EVERY == 0:
                         text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})'
-                        self.model.save_sample(text, self.optim.training_step)
+                        self.model.save('sample', text, self.optim.training_step)
                         #print(text)
                     idx = self.replay_memory.push(src_raw[i], prediction_with_bos, rewards[i])
                     logger.debug(f"Using / Replacing Index {idx}")
                 else:
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
+                    
+    def _pretrain_step(self, batch, normalization):
+        true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
+        
+        self.pretrain_optim.zero_grad()
+        outputs, attns = self.current_model(src, tgt, src_lengths, bptt=False)
+        
+        try:
+            loss, batch_stats = self.pretrain_loss(
+                true_batch,
+                outputs,
+                attns,
+                normalization=normalization)
+            
+            print("Loss: ", loss)
+            
+            logger.debug(loss)
+
+            if loss is not None: # maybe already backwarded in train_loss
+                self.pretrain_optim.backward(loss)
+                self.grad_flow(self.current_model.named_parameters(), self.pretrain_optim.training_step)
+
+        except Exception:
+            traceback.print_exc()
+            logger.info("At step %d, we removed a batch", self.pretrain_optim.training_step)
+            
+        self.pretrain_optim.step()
+
+        if self.current_model.decoder.state is not None:
+            self.current_model.decoder.detach_state()
+
 
     def _step(self, batch, normalization):
         true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
-        target_size = tgt.size(0)     
                 
         self.current_model.update_noise()
         self.target_model.update_noise()
             
         # pass through encoder and decoder
-        bptt = False
         self.optim.zero_grad()
-        current_net_outputs, current_net_attns = self.current_model(src, tgt, src_lengths, bptt=bptt)
-        target_net_outputs, target_net_attns = self.target_model(src, tgt, src_lengths, bptt=bptt)
-        bptt = True
+        current_net_outputs, current_net_attns = self.current_model(src, tgt, src_lengths, bptt=False)
+        target_net_outputs, target_net_attns = self.target_model(src, tgt, src_lengths, bptt=False)
 
         # pass through generator
-        current_net_q_outputs = self.model.current_model.generator(current_net_outputs)
-        target_net_q_outputs = self.model.target_model.generator(target_net_outputs).detach() # detach from graph, don't backpropagate
+        current_net_q_outputs = self.current_model.generator(current_net_outputs)
+        target_net_q_outputs = self.target_model.generator(target_net_outputs).detach() # detach from graph, don't backpropagate
 
         # calc q values
         current_net_q_values = self.model.get_current_q_values(current_net_q_outputs, tgt)        
@@ -289,6 +271,10 @@ class QLearning(object):
         tgt_is_eos[-1] = terminal_reward.view(tgt_is_eos.size(1), 1)
         rewards = (tgt_is_eos.float() * torch.Tensor(reward).to(self.config.device).view(tgt_is_eos.size(1), 1))[1:]
         
+        if self.config.N_STEPS > 1:
+            # one-sided exponential n-step decay of rewards via convolution
+            rewards = F.conv1d(rewards.permute(1, 2, 0), self.kernel, padding=self.padding).permute(2, 0, 1)
+                    
         # mask bc padding
         mask = torch.ones_like(tgt, device=self.config.device)
         for eos_token in (tgt == self.config.tgt_eos).nonzero():
@@ -296,18 +282,23 @@ class QLearning(object):
         mask = mask[1:].float()
 
         masked_current_net_q_values = current_net_q_values * mask
-        masked_next_q_values = torch.cat([next_q_values * mask[1:],torch.zeros((1,self.config.BATCH_SIZE,1), device=self.config.device)]) # add zeros for final state
+        masked_next_q_values = torch.cat([next_q_values * mask[1:],torch.zeros((self.config.N_STEPS,self.config.BATCH_SIZE,1), device=self.config.device)])[self.config.N_STEPS-1:] # add zeros for final state(s)
 
-        expected_q_values = rewards + self.config.GAMMA * masked_next_q_values 
+        expected_q_values = rewards + self.config.GAMMA ** self.config.N_STEPS * masked_next_q_values 
         
         weights = None
         if self.model.replay_type == 'per':
             weights, idxes = per
-            priorities = (masked_current_net_q_values - expected_q_values).detach().abs().sum(dim=0).squeeze().cpu().tolist() # TODO: Maybe mean instead of sum for priorities
+            abs_td = (masked_current_net_q_values - expected_q_values).detach().abs()
+            priorities = abs_td.sum(dim=0).squeeze().cpu().tolist() # TODO: Maybe mean instead of sum for priorities
             self.replay_memory.update_priorities(idxes, priorities)
+            if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
+                self.model.save('td', abs_td.sum().item(), self.optim.training_step)
             weights = torch.Tensor(weights).to(self.config.device)
-            
-        # Compute loss (TD-Error)
+            if self.optim.training_step % self.config.SAVE_PER_WEIGHTS_EVERY == 0:
+                self.model.save('per_weights', weights.sum().item(), self.optim.training_step)
+                        
+        # Compute loss
         try:
             # loss, batch_stats
             loss = self.train_loss(
@@ -317,7 +308,7 @@ class QLearning(object):
                 weights=weights,
                 normalization=normalization,
                 shard_size=self.shard_size)
-            
+                        
             logger.debug(loss)
 
             if loss is not None: # maybe already backwarded in train_loss
@@ -328,7 +319,7 @@ class QLearning(object):
             if self.optim.training_step % self.config.SAVE_SIGMA_EVERY == 0:
                 self.model.save_sigma_param_magnitudes(self.optim.training_step)
             if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
-                self.model.save_td(loss.item(), self.optim.training_step)
+                self.model.save('loss', loss.item(), self.optim.training_step)
 
         except Exception:
             traceback.print_exc()

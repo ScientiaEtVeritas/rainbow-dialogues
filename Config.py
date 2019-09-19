@@ -9,13 +9,15 @@ class Config(object):
         self.min_token_occurrences = 20
         
         #seq2seq hyperparameters
+        self.rnn_type = "GRU" # options: LSTM, GRU
         self.emb_size = 100
         self.rnn_size = 500
         
         # DQN
-        self.target_update_freq = 8000 # typically 10^4 to 10^6
+        self.target_update_freq = 10000 # typically 10^4 to 10^6
         self.DUELING = True
         self.criterion = "huber" # options: huber, mse
+        self.N_STEPS = 3
         
         # Replay Memory
         self.replay_type = "per" # options: er, per
@@ -26,7 +28,7 @@ class Config(object):
         # PER
         self.PER_ALPHA = 0.6 # The exponent α determines how much prioritization is used, with α = 0 corresponding to the uniform case.
         self.PER_BETA_START = 0.4 # We can correct this bias by using importance-sampling (IS) weights that fully compensates for the non-uniform probabilities P(i) if β = 1
-        self.BETA_MAX_ITER = 300000
+        self.BETA_MAX_ITER = 1500000
         
         #misc agent variables
         self.GAMMA = 0.99 # discount factor
@@ -36,7 +38,9 @@ class Config(object):
         #data logging parameters
         self.SAVE_SAMPLE_EVERY = 5
         self.SAVE_SIGMA_EVERY = 500
-        self.SAVE_TD_EVERY = 100
+        self.SAVE_LOSS_EVERY = 1
+        self.SAVE_TD_EVERY = 1
+        self.SAVE_PER_WEIGHTS_EVERY = 1
         self.SAVE_GRAD_FLOW_EVERY = 250
 
 config = Config()
