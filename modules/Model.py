@@ -12,6 +12,10 @@ class Model(object):
         self.network = network
         self.replay_type = config.replay_type
         
+        if config.DISTRIBUTIONAL:
+            self.quantile_weight = 1.0 / config.QUANTILES
+            self.cumulative_density = torch.tensor((2 * np.arange(config.QUANTILES) + 1) / (2.0 * config.QUANTILES), device=config.device, dtype=torch.float)
+        
         self.declare_networks()
         self.declare_memory()
         
@@ -49,17 +53,25 @@ class Model(object):
     def get_current_q_values(self, output, target):
         target = target[1:]
         max_tgt_length = target.size(0)
-        q_values = output[:max_tgt_length].gather(2,target)
+        if self.config.DISTRIBUTIONAL:
+            q_values = output[:max_tgt_length].gather(2,target.unsqueeze(dim=-1).expand(-1, -1, -1, self.config.QUANTILES))    
+        else:
+            q_values = output[:max_tgt_length].gather(2,target)
         return q_values
     
     def get_next_q_values(self, current_net_q_outputs, target_net_q_outputs):
-        if current_net_q_outputs.size(0) > 1:
-            current_net_next_q_outputs = current_net_q_outputs[1:]
-            target_net_next_q_outputs = target_net_q_outputs[1:]
-            next_q_values = target_net_next_q_outputs.gather(2, torch.max(current_net_next_q_outputs, 2)[1].unsqueeze(2)) # decorrelate select and max
-            return next_q_values
-        else: # all sequences are final after one transition, so there is no "next q value" for any of them 
-            return torch.zeros((0,self.config.BATCH_SIZE,1), device=self.config.device)
+        current_net_next_q_outputs = current_net_q_outputs[1:]
+        target_net_next_q_outputs = target_net_q_outputs[1:]
+        if self.config.DISTRIBUTIONAL:
+            max_next_action = torch.max((current_net_next_q_outputs * self.quantile_weight).sum(dim=3), 2)[1]
+            max_next_action = max_next_action.view(-1, self.config.BATCH_SIZE, 1, 1).expand(-1, -1, -1, self.config.QUANTILES)
+            next_q_values = target_net_next_q_outputs.gather(2, max_next_action)
+        else:
+            if current_net_q_outputs.size(0) > 1:
+                next_q_values = target_net_next_q_outputs.gather(2, torch.max(current_net_next_q_outputs, 2)[1].unsqueeze(2)) # decorrelate select and max
+            else: # all sequences are final after one transition, so there is no "next q value" for any of them 
+                return torch.zeros((0,self.config.BATCH_SIZE,1), device=self.config.device)
+        return next_q_values
         
     def save_sigma_param_magnitudes(self, tstep):
         with torch.no_grad():

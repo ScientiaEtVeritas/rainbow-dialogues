@@ -31,6 +31,7 @@ class NoisyLinear(nn.Module):
         return x.sign().mul_(x.abs().sqrt_())
 
     def sample_noise(self):
+        assert self.training == True
         if self.factorised_noise:
             epsilon_in = self._scale_noise(self.in_features)
             epsilon_out = self._scale_noise(self.out_features)

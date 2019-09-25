@@ -43,6 +43,7 @@ class MSELoss(onmt.utils.loss.LossComputeBase):
                  q_values,
                  expected_q_values,
                  weights = None,
+                 density_weights = None,
                  normalization=1.0,
                  shard_size=0,
                  trunc_start=0,
@@ -78,10 +79,20 @@ class MSELoss(onmt.utils.loss.LossComputeBase):
         if shard_size == 0:
             #loss, stats = self._compute_loss(batch, **shard_state)
             loss = self._compute_loss(batch, **shard_state)
-            if weights is not None:
-                loss = loss.sum(dim=0).squeeze() * weights
-            loss = loss.sum()
-            return loss / float(normalization)#, stats
+            if density_weights is not None:
+                loss = (loss * density_weights).transpose(1,2)
+                if weights is not None:
+                    weights = weights.view(-1, 1, 1)
+                    priorities = loss.detach().mean(2).sum(-1).sum(0)
+                    loss = (loss * weights).mean(2).sum(-1).mean()
+                    return loss / float(normalization), priorities
+                else: # TODO: implement distributional rl with plain er
+                    pass
+            else:
+                if weights is not None:
+                    loss = loss.sum(dim=0).squeeze() * weights
+                loss = loss.sum()
+                return loss / float(normalization), None
         #batch_stats = onmt.utils.Statistics()
         for shard in shards(shard_state, shard_size): # TODO: implement weights for sharding (!)
             #loss, stats

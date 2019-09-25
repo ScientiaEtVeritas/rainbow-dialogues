@@ -10,8 +10,7 @@ from modules.Reward import Reward
 from modules.RLModelSaver import RLModelSaver
 from modules.QLearning import QLearning
 
-
-vocab_fields = torch.load("data/cornell_raw_min_1000_tok.vocab.pt")
+vocab_fields = torch.load("data/cornell_raw_min_900_tok.vocab.pt")
 
 src_text_field = vocab_fields["src"].base_field
 src_vocab = src_text_field.vocab
@@ -32,7 +31,7 @@ config.tgt_unk = tgt_vocab.stoi[tgt_text_field.unk_token]
 config.tgt_bos = tgt_vocab.stoi[tgt_text_field.init_token]
 config.tgt_eos = tgt_vocab.stoi[tgt_text_field.eos_token]
 
-train_data_file = "data/cornell_raw_min_1000_tok.train.0.pt"
+train_data_file = "data/cornell_raw_min_900_tok.train.0.pt"
 train_iter = onmt.inputters.inputter.DatasetLazyIter(dataset_paths=[train_data_file],
                                                      fields=vocab_fields,
                                                      batch_size=1,
@@ -67,7 +66,11 @@ config.rewards_weights = [1]
 
 reward = Reward(config)
 
-torch_optimizer = torch.optim.Adam(model.current_model.parameters(), lr=config.LR)
+if config.optimizer == "adam:":
+    torch_optimizer = torch.optim.Adam(model.current_model.parameters(), lr=config.LR)
+elif config.optimizer == "ranger":
+    from lib.Ranger import Ranger
+    torch_optimizer = Ranger(model.current_model.parameters(), lr=config.LR)
 optim = onmt.utils.optimizers.Optimizer(torch_optimizer, learning_rate=config.LR, max_grad_norm=2)
 
 model_saver = RLModelSaver("checkpoints/checkpoint", model, config, vocab_fields, optim)

@@ -207,7 +207,6 @@ class QLearning(object):
                     if self.optim.training_step % self.config.SAVE_SAMPLE_EVERY == 0:
                         text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})'
                         self.model.save('sample', text, self.optim.training_step)
-                        #print(text)
                     idx = self.replay_memory.push(src_raw[i], prediction_with_bos, rewards[i])
                     logger.debug(f"Using / Replacing Index {idx}")
                 else:
@@ -225,9 +224,7 @@ class QLearning(object):
                 outputs,
                 attns,
                 normalization=normalization)
-            
-            print("Loss: ", loss)
-            
+                        
             logger.debug(loss)
 
             if loss is not None: # maybe already backwarded in train_loss
@@ -248,20 +245,21 @@ class QLearning(object):
         true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
                 
         self.current_model.update_noise()
-        self.target_model.update_noise()
+        with torch.no_grad():
+            self.target_model.update_noise()
             
         # pass through encoder and decoder
         self.optim.zero_grad()
-        current_net_outputs, current_net_attns = self.current_model(src, tgt, src_lengths, bptt=False)
-        target_net_outputs, target_net_attns = self.target_model(src, tgt, src_lengths, bptt=False)
+        current_net__outputs, current_net_attns = self.current_model(src, tgt, src_lengths, bptt=False)
+        target_net__outputs, target_net_attns = self.target_model(src, tgt, src_lengths, bptt=False)
 
         # pass through generator
-        current_net_q_outputs = self.current_model.generator(current_net_outputs)
-        target_net_q_outputs = self.target_model.generator(target_net_outputs).detach() # detach from graph, don't backpropagate
-
+        current_net__q_outputs = self.current_model.generator(current_net__outputs)
+        target_net__q_outputs = self.target_model.generator(target_net__outputs).detach() # detach from graph, don't backpropagate
+            
         # calc q values
-        current_net_q_values = self.model.get_current_q_values(current_net_q_outputs, tgt)        
-        next_q_values = self.model.get_next_q_values(current_net_q_outputs, target_net_q_outputs)
+        q_values = self.model.get_current_q_values(current_net__q_outputs, tgt)    
+        next_q_values = self.model.get_next_q_values(current_net__q_outputs, target_net__q_outputs)
                 
         # construct reward tensor
         tgt_is_eos = (tgt == self.config.tgt_eos)
@@ -269,7 +267,7 @@ class QLearning(object):
         other = tgt_is_eos[-1].squeeze().float()
         terminal_reward = torch.where(cond, torch.ones((tgt_is_eos.size(1)), device=self.config.device), other)
         tgt_is_eos[-1] = terminal_reward.view(tgt_is_eos.size(1), 1)
-        rewards = (tgt_is_eos.float() * torch.Tensor(reward).to(self.config.device).view(tgt_is_eos.size(1), 1))[1:]
+        rewards = (tgt_is_eos.float() * torch.Tensor(reward).to(self.config.device).view(tgt_is_eos.size(1), 1))[1:]            
         
         if self.config.N_STEPS > 1:
             # one-sided exponential n-step decay of rewards via convolution
@@ -280,20 +278,30 @@ class QLearning(object):
         for eos_token in (tgt == self.config.tgt_eos).nonzero():
             mask[eos_token[0]+1:,eos_token[1]] = 0
         mask = mask[1:].float()
+        
+        if self.config.DISTRIBUTIONAL:
+            rewards = rewards.unsqueeze(3)
+            mask = mask.unsqueeze(3)
+            zero_pad = torch.zeros((self.config.N_STEPS,self.config.BATCH_SIZE,1,self.config.QUANTILES), device=self.config.device)
+        else:
+            zero_pad = torch.zeros((self.config.N_STEPS,self.config.BATCH_SIZE,1), device=self.config.device)
 
-        masked_current_net_q_values = current_net_q_values * mask
-        masked_next_q_values = torch.cat([next_q_values * mask[1:],torch.zeros((self.config.N_STEPS,self.config.BATCH_SIZE,1), device=self.config.device)])[self.config.N_STEPS-1:] # add zeros for final state(s)
+        masked_q_values = q_values * mask
+        masked_next_q_values = torch.cat([next_q_values * mask[1:], zero_pad])[self.config.N_STEPS-1:] # add zeros for final state(s)
 
-        expected_q_values = rewards + self.config.GAMMA ** self.config.N_STEPS * masked_next_q_values 
+        expected_q_values = rewards + self.config.GAMMA ** self.config.N_STEPS * masked_next_q_values
+        
+        density_weights = None
+        if self.config.DISTRIBUTIONAL:
+            expected_q_values = expected_q_values.permute(0,3,1,2)
+            masked_q_values =  masked_q_values.permute(0,2,1,3)
+            diff = expected_q_values - masked_q_values
+            density_weights = torch.abs(self.model.cumulative_density.view(1, 1, -1) - (diff < 0).to(torch.float))
+            (self.train_loss.criterion(masked_q_values, expected_q_values) * density_weights).transpose(1,2)
         
         weights = None
         if self.model.replay_type == 'per':
             weights, idxes = per
-            abs_td = (masked_current_net_q_values - expected_q_values).detach().abs()
-            priorities = abs_td.sum(dim=0).squeeze().cpu().tolist() # TODO: Maybe mean instead of sum for priorities
-            self.replay_memory.update_priorities(idxes, priorities)
-            if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
-                self.model.save('td', abs_td.sum().item(), self.optim.training_step)
             weights = torch.Tensor(weights).to(self.config.device)
             if self.optim.training_step % self.config.SAVE_PER_WEIGHTS_EVERY == 0:
                 self.model.save('per_weights', weights.sum().item(), self.optim.training_step)
@@ -301,15 +309,27 @@ class QLearning(object):
         # Compute loss
         try:
             # loss, batch_stats
-            loss = self.train_loss(
+            loss, priorities = self.train_loss(
                 true_batch,
-                masked_current_net_q_values,
+                masked_q_values,
                 expected_q_values,
                 weights=weights,
+                density_weights=density_weights,
                 normalization=normalization,
                 shard_size=self.shard_size)
                         
             logger.debug(loss)
+            
+            if self.model.replay_type == "per":
+                if self.config.DISTRIBUTIONAL:
+                    self.replay_memory.update_priorities(idxes, priorities)
+                else:
+                    abs_td = (masked_q_values - expected_q_values).detach().abs()
+                    priorities = abs_td.sum(dim=0).squeeze().cpu().tolist() # TODO: Maybe mean instead of sum for priorities
+                    self.replay_memory.update_priorities(idxes, priorities)
+                    if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
+                        self.model.save('td', abs_td.sum().item(), self.optim.training_step)
+
 
             if loss is not None: # maybe already backwarded in train_loss
                 self.optim.backward(loss)

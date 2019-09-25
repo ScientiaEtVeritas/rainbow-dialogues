@@ -7,43 +7,59 @@ import onmt.modules
 from onmt.translate.random_sampling import RandomSampling
 
 from modules.NoisyLinear import NoisyLinear
+from lib.Mish import Mish
 
 class Generator(nn.Module):
-    def __init__(self, rnn_size, tgt_vocab_size, dueling = False):
+    def __init__(self, config):
         super(Generator, self).__init__()
         
-        self.rnn_size = rnn_size
-        self.tgt_vocab_size = tgt_vocab_size
-        self.dueling = dueling
+        self.rnn_size = config.rnn_size
+        self.tgt_vocab_size = config.tgt_vocab_size
+        self.batch_size = config.BATCH_SIZE
+        self.dueling = config.DUELING
+        self.distributional = config.DISTRIBUTIONAL
+        self.quantiles = config.QUANTILES
         self.noisy_layers = []
+        calc_output_size = lambda o: (o * self.quantiles) if self.distributional else o
         
         if self.dueling:
-            advantages_nl1 = NoisyLinear(rnn_size, tgt_vocab_size)
-            advantages_nl2 = NoisyLinear(tgt_vocab_size, tgt_vocab_size)
+            advantages_nl1 = NoisyLinear(self.rnn_size, self.tgt_vocab_size)
+            advantages_nl2 = NoisyLinear(self.tgt_vocab_size, calc_output_size(self.tgt_vocab_size))
             self.advantages = nn.Sequential(
                 advantages_nl1,
-                nn.ReLU(),
+                #nn.ReLU(),
+                Mish(),
                 advantages_nl2
             )
 
-            value_nl1 = NoisyLinear(rnn_size, rnn_size)
-            value_nl2 = NoisyLinear(rnn_size, 1)
+            value_nl1 = NoisyLinear(self.rnn_size, self.rnn_size)
+            value_nl2 = NoisyLinear(self.rnn_size, calc_output_size(1))
             self.value = nn.Sequential(
                 value_nl1,
-                nn.ReLU(),
+                #nn.ReLU(),
+                Mish(),
                 value_nl2
             )
             self.noisy_layers = [advantages_nl1, advantages_nl2, value_nl2, value_nl2]
         else:
-            self.q_values = NoisyLinear(rnn_size, tgt_vocab_size)
+            self.q_values = NoisyLinear(self.rnn_size, calc_output_size(self.tgt_vocab_size))
             self.noisy_layers = [self.q_values]
             
     def forward(self, x):
         if self.dueling:
-            adv = self.advantages(x)
-            val = self.value(x)            
-            return val + (adv - adv.mean(dim=-1, keepdim=True))
-        else:
+            if self.distributional:
+                batch_size = self.batch_size
+                if x.dim() == 2:
+                    batch_size = x.size(0)
+                adv = self.advantages(x).view(-1, batch_size, self.tgt_vocab_size, self.quantiles)
+                val = self.value(x).view(-1, batch_size, 1, self.quantiles)
+                adv_mean = adv.mean(dim=2,keepdim=True)#.view(-1, self.batch_size, 1, self.quantiles)
+                return val + (adv - adv_mean)
+            else:
+                adv = self.advantages(x)
+                val = self.value(x)            
+                return val + (adv - adv.mean(dim=-1, keepdim=True))
+        else: # TODO: Distributional for non-dueling networks
             return self.q_values(x)  
         
     def sample_noise(self):
@@ -78,7 +94,10 @@ class DQN(nn.Module):
             dropout=0.0,
         )
         
-        self.generator = Generator(c.rnn_size, c.tgt_vocab_size, c.DUELING)
+        self.generator = Generator(c)
+        
+        if config.DISTRIBUTIONAL:
+            self.quantile_weight = 1.0 / config.QUANTILES
                 
     def forward(self, src, tgt, lengths, bptt = False):
         if self.training: # Training with teacher forcing
@@ -123,7 +142,10 @@ class DQN(nn.Module):
             decoder_input = random_sampler.alive_seq[:, -1].view(1, -1, 1)
 
             log_probs, attn = self._decode_and_generate(decoder_input, memory_bank, memory_lengths, step)
-            
+                        
+            if self.config.DISTRIBUTIONAL:
+                log_probs = (log_probs * self.quantile_weight).sum(dim=3).squeeze(0)
+                            
             random_sampler.advance(log_probs, attn)
             any_batch_is_finished = random_sampler.is_finished.any()
             if any_batch_is_finished:
@@ -158,6 +180,8 @@ class DQN(nn.Module):
         dec_out, dec_attn = self.decoder(
             decoder_in, memory_bank, memory_lengths=memory_lengths, step=step
         )
+                
+        self.update_noise() # TODO:
 
         # Generator forward.
         attn = dec_attn["std"] if "std" in dec_attn else attn
