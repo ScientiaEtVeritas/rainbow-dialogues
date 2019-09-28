@@ -87,6 +87,8 @@ class QLearning(object):
         
         self.padding = int(math.ceil(self.kernel.size(2) - 1) / 2)
 
+        self.index_tensor = torch.arange(0, config.max_sequence_length + 2, device=config.device).repeat(config.BATCH_SIZE, 1)
+
         # Set model in training mode.
         self.current_model.train()
         self.target_model.train()
@@ -181,6 +183,7 @@ class QLearning(object):
         src = pad_sequence(src_raw, padding_value=self.config.src_padding).to(self.config.device)
         tgt = pad_sequence(tgt_raw, padding_value=self.config.tgt_padding).to(self.config.device)
         src_lengths = torch.ShortTensor([s.size(0) for s in src_raw]).to(self.config.device)
+        tgt_lengths = torch.LongTensor([s.size(0) for s in tgt_raw]).to(self.config.device)
 
         logger.debug("Batch Length: " + str(src_lengths))
 
@@ -189,12 +192,12 @@ class QLearning(object):
         true_batch.tgt = tgt
         true_batch.lengths = src_lengths
 
-        return true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per
-    
+        return true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per
+
     def _sample(self):
         logger.info("Sampling: Collecting new data")
         batch = self.model.sample_buffer.sample(self.config.BATCH_SIZE)
-        true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
+        true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
         with torch.no_grad():
             self.current_model.update_noise()
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
@@ -213,7 +216,7 @@ class QLearning(object):
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
                     
     def _pretrain_step(self, batch, normalization):
-        true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
+        true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
         
         self.pretrain_optim.zero_grad()
         outputs, attns = self.current_model(src, tgt, src_lengths, bptt=False)
@@ -242,7 +245,7 @@ class QLearning(object):
 
 
     def _step(self, batch, normalization):
-        true_batch, src, tgt, src_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
+        true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
                 
         self.current_model.update_noise()
         with torch.no_grad():
@@ -256,28 +259,21 @@ class QLearning(object):
         # pass through generator
         current_net__q_outputs = self.current_model.generator(current_net__outputs)
         target_net__q_outputs = self.target_model.generator(target_net__outputs).detach() # detach from graph, don't backpropagate
-            
+
         # calc q values
         q_values = self.model.get_current_q_values(current_net__q_outputs, tgt)    
         next_q_values = self.model.get_next_q_values(current_net__q_outputs, target_net__q_outputs)
                 
         # construct reward tensor
-        tgt_is_eos = (tgt == self.config.tgt_eos)
-        cond = (tgt_is_eos.sum(dim=0) == 0).squeeze().byte()
-        other = tgt_is_eos[-1].squeeze().float()
-        terminal_reward = torch.where(cond, torch.ones((tgt_is_eos.size(1)), device=self.config.device), other)
-        tgt_is_eos[-1] = terminal_reward.view(tgt_is_eos.size(1), 1)
-        rewards = (tgt_is_eos.float() * torch.Tensor(reward).to(self.config.device).view(tgt_is_eos.size(1), 1))[1:]            
-        
+        idxes = self.index_tensor[:,:tgt.size(0)]
+        rewards = (idxes.eq((tgt_lengths - 1).unsqueeze(1)).t().float() * torch.Tensor(reward).to(self.config.device))[1:].unsqueeze(2)            
+
         if self.config.N_STEPS > 1:
             # one-sided exponential n-step decay of rewards via convolution
             rewards = F.conv1d(rewards.permute(1, 2, 0), self.kernel, padding=self.padding).permute(2, 0, 1)
-                    
+
         # mask bc padding
-        mask = torch.ones_like(tgt, device=self.config.device)
-        for eos_token in (tgt == self.config.tgt_eos).nonzero():
-            mask[eos_token[0]+1:,eos_token[1]] = 0
-        mask = mask[1:].float()
+        mask = idxes.lt(tgt_lengths.unsqueeze(1)).t()[1:].float().unsqueeze(2)
         
         if self.config.DISTRIBUTIONAL:
             rewards = rewards.unsqueeze(3)
@@ -297,7 +293,6 @@ class QLearning(object):
             masked_q_values =  masked_q_values.permute(0,2,1,3)
             diff = expected_q_values - masked_q_values
             density_weights = torch.abs(self.model.cumulative_density.view(1, 1, -1) - (diff < 0).to(torch.float))
-            (self.train_loss.criterion(masked_q_values, expected_q_values) * density_weights).transpose(1,2)
         
         weights = None
         if self.model.replay_type == 'per':
@@ -329,7 +324,6 @@ class QLearning(object):
                     self.replay_memory.update_priorities(idxes, priorities)
                     if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
                         self.model.save('td', abs_td.sum().item(), self.optim.training_step)
-
 
             if loss is not None: # maybe already backwarded in train_loss
                 self.optim.backward(loss)

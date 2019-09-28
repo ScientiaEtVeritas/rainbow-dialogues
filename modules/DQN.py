@@ -23,8 +23,8 @@ class Generator(nn.Module):
         calc_output_size = lambda o: (o * self.quantiles) if self.distributional else o
         
         if self.dueling:
-            advantages_nl1 = NoisyLinear(self.rnn_size, self.tgt_vocab_size)
-            advantages_nl2 = NoisyLinear(self.tgt_vocab_size, calc_output_size(self.tgt_vocab_size))
+            advantages_nl1 = NoisyLinear(self.rnn_size, self.rnn_size)
+            advantages_nl2 = NoisyLinear(self.rnn_size, calc_output_size(self.tgt_vocab_size))
             self.advantages = nn.Sequential(
                 advantages_nl1,
                 #nn.ReLU(),
