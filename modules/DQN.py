@@ -40,7 +40,7 @@ class Generator(nn.Module):
                 Mish(),
                 value_nl2
             )
-            self.noisy_layers = [advantages_nl1, advantages_nl2, value_nl2, value_nl2]
+            self.noisy_layers = [advantages_nl1, advantages_nl2, value_nl1, value_nl2]
         else:
             self.q_values = NoisyLinear(self.rnn_size, calc_output_size(self.tgt_vocab_size))
             self.noisy_layers = [self.q_values]
@@ -62,9 +62,9 @@ class Generator(nn.Module):
         else: # TODO: Distributional for non-dueling networks
             return self.q_values(x)  
         
-    def sample_noise(self):
+    def sample_noise(self, inplace = True):
         for noisy_layer in self.noisy_layers:
-            noisy_layer.sample_noise()
+            noisy_layer.sample_noise(inplace = inplace)
 
 class DQN(nn.Module):
     def __init__(self,
@@ -190,8 +190,8 @@ class DQN(nn.Module):
         # or [ tgt_len, batch_size, vocab ] when full sentence
         return log_probs, attn
         
-    def update_noise(self):
-        self.generator.sample_noise()
+    def update_noise(self, inplace = True):
+        self.generator.sample_noise(inplace = inplace)
         
     # NOTE: Dropout isn't usually used with RL, see https://ai.stackexchange.com/questions/8293/why-do-you-not-see-dropout-layers-on-reinforcement-learning-examples
     #def update_dropout(self, dropout):

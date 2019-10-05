@@ -66,7 +66,7 @@ config.rewards_weights = [1]
 
 reward = Reward(config)
 
-if config.optimizer == "adam:":
+if config.optimizer == "adam":
     torch_optimizer = torch.optim.Adam(model.current_model.parameters(), lr=config.LR)
 elif config.optimizer == "ranger":
     from lib.Ranger import Ranger

@@ -23,6 +23,7 @@ class Config(object):
         
         # Replay Memory
         self.replay_type = "per" # options: er, per
+        self.PRIORITY_TYPE = "sum" # options: mean, sum | only applicable if replay_type = "per"
         self.EXP_REPLAY_SIZE = 1000000 # Memory size 1M transitions
         self.PRETRAIN_ITER = 0
         self.SAMPLE_EVERY = 8

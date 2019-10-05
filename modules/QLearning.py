@@ -214,6 +214,25 @@ class QLearning(object):
                     logger.debug(f"Using / Replacing Index {idx}")
                 else:
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
+
+    def _valid(self, checkpoint_num = 0):
+        batch = self.model.sample_buffer.get_all()
+        self.config.BATCH_SIZE = len(batch)
+        true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
+        with torch.no_grad():
+            self.current_model.eval()
+            predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
+            rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
+            self.model.save('reward_valid', rewards.sum().item(), checkpoint_num)
+            print(checkpoint_num, "---", rewards.sum().item() / self.config.BATCH_SIZE)
+            for i, prediction in enumerate(predictions):
+                prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
+                if prediction_with_bos.size(0) > 1:
+                    prediction_with_bos = prediction_with_bos.unsqueeze(1)
+                    text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})'
+                    self.model.save('sample_' + str(checkpoint_num), text, checkpoint_num)
+                else:
+                    logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
                     
     def _pretrain_step(self, batch, normalization):
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
@@ -260,9 +279,14 @@ class QLearning(object):
         current_net__q_outputs = self.current_model.generator(current_net__outputs)
         target_net__q_outputs = self.target_model.generator(target_net__outputs).detach() # detach from graph, don't backpropagate
 
+        # another generation with new noise for action selection
+        with torch.no_grad():
+            self.current_model.update_noise(inplace = False)
+            current_net__q_outputs_decorrelated = self.current_model.generator(current_net__outputs)
+
         # calc q values
         q_values = self.model.get_current_q_values(current_net__q_outputs, tgt)    
-        next_q_values = self.model.get_next_q_values(current_net__q_outputs, target_net__q_outputs)
+        next_q_values = self.model.get_next_q_values(current_net__q_outputs_decorrelated, target_net__q_outputs)
                 
         # construct reward tensor
         idxes = self.index_tensor[:,:tgt.size(0)]
@@ -317,10 +341,15 @@ class QLearning(object):
             
             if self.model.replay_type == "per":
                 if self.config.DISTRIBUTIONAL:
+                    if self.config.PRIORITY_TYPE == 'mean':
+                        priorities = priorities / (tgt_lengths - 1).float()
                     self.replay_memory.update_priorities(idxes, priorities)
                 else:
                     abs_td = (masked_q_values - expected_q_values).detach().abs()
-                    priorities = abs_td.sum(dim=0).squeeze().cpu().tolist() # TODO: Maybe mean instead of sum for priorities
+                    priorities = abs_td.sum(dim=0).squeeze()
+                    if self.config.PRIORITY_TYPE == 'mean':
+                        priorities = priorities / (tgt_lengths - 1).float()
+                    priorities = priorities.cpu().tolist()
                     self.replay_memory.update_priorities(idxes, priorities)
                     if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
                         self.model.save('td', abs_td.sum().item(), self.optim.training_step)

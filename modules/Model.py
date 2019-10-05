@@ -63,9 +63,12 @@ class Model(object):
         current_net_next_q_outputs = current_net_q_outputs[1:]
         target_net_next_q_outputs = target_net_q_outputs[1:]
         if self.config.DISTRIBUTIONAL:
-            max_next_action = torch.max((current_net_next_q_outputs * self.quantile_weight).sum(dim=3), 2)[1]
-            max_next_action = max_next_action.view(-1, self.config.BATCH_SIZE, 1, 1).expand(-1, -1, -1, self.config.QUANTILES)
-            next_q_values = target_net_next_q_outputs.gather(2, max_next_action)
+            if current_net_q_outputs.size(0) > 1:
+                max_next_action = torch.max((current_net_next_q_outputs * self.quantile_weight).sum(dim=3), 2)[1]
+                max_next_action = max_next_action.view(-1, self.config.BATCH_SIZE, 1, 1).expand(-1, -1, -1, self.config.QUANTILES)
+                next_q_values = target_net_next_q_outputs.gather(2, max_next_action)
+            else:
+                return torch.zeros((0,self.config.BATCH_SIZE,1,self.config.QUANTILES), device=self.config.device)
         else:
             if current_net_q_outputs.size(0) > 1:
                 next_q_values = target_net_next_q_outputs.gather(2, torch.max(current_net_next_q_outputs, 2)[1].unsqueeze(2)) # decorrelate select and max

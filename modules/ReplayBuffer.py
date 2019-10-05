@@ -180,6 +180,13 @@ class ReplayBuffer(object):
             self._storage[self._next_idx] = data
         self._next_idx = self._preloading_size + ((self._next_idx + 1 - self._preloading_size) % (self._maxsize - self._preloading_size))
 
+    def get_all(self):
+        transitions = []
+        for data in self._storage:
+            src, tgt, reward = data
+            transitions.append((src, tgt, reward))
+        return transitions
+
     def _encode_sample(self, idxes):
         transitions = []
         for i in idxes:
