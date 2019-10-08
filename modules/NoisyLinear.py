@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class NoisyLinear(nn.Module):
-    def __init__(self, in_features, out_features, std_init=0.4, factorised_noise=True):
+    def __init__(self, in_features, out_features, std_init=0.4, factorised_noise=True, device=None):
         super(NoisyLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -20,6 +20,7 @@ class NoisyLinear(nn.Module):
         self.sample_noise()
         self.weight_epsilon_ = None
         self.bias_epsilon_ = None
+        self.device = device
 
     def reset_parameters(self):
         mu_range = 1.0 / math.sqrt(self.in_features)
@@ -41,7 +42,7 @@ class NoisyLinear(nn.Module):
                 self.weight_epsilon.copy_(epsilon_out.ger(epsilon_in))
                 self.bias_epsilon.copy_(epsilon_out)
             else:
-                self.weight_epsilon_, self.bias_epsilon_ = epsilon_out.ger(epsilon_in), epsilon_out
+                self.weight_epsilon_, self.bias_epsilon_ = epsilon_out.ger(epsilon_in).to(self.device), epsilon_out.to(self.device)
         else:
             self.weight_epsilon.copy_(torch.randn((self.out_features, self.in_features)))
             self.bias_epsilon.copy_(torch.randn(self.out_features))
@@ -51,7 +52,6 @@ class NoisyLinear(nn.Module):
             if self.weight_epsilon_ is not None and self.bias_epsilon_ is not None:
                 out = F.linear(inp, self.weight_mu + self.weight_sigma * self.weight_epsilon_, self.bias_mu + self.bias_sigma * self.bias_epsilon_)
                 self.weight_epsilon_ = self.bias_epsilon_ = None
-                print(self.weight_epsilon_, self.bias_epsilon_)
                 return out
             else:
                 return F.linear(inp, self.weight_mu + self.weight_sigma * self.weight_epsilon, self.bias_mu + self.bias_sigma * self.bias_epsilon)

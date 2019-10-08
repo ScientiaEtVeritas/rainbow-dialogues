@@ -12,6 +12,11 @@ class Config(object):
         self.rnn_type = "GRU" # options: LSTM, GRU
         self.emb_size = 100
         self.rnn_size = 500
+
+        # Supervised Pretraining
+        self.SUPERVISED_PRETRAINING = True 
+        self.SAVE_PRETRAIN_LOSS_EVERY = 20
+        self.SAVE_PRETRAIN_REWARD_EVERY = 5
         
         # DQN
         self.target_update_freq = 10000 # typically 10^4 to 10^6

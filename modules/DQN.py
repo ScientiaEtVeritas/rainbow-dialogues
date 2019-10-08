@@ -23,8 +23,8 @@ class Generator(nn.Module):
         calc_output_size = lambda o: (o * self.quantiles) if self.distributional else o
         
         if self.dueling:
-            advantages_nl1 = NoisyLinear(self.rnn_size, self.rnn_size)
-            advantages_nl2 = NoisyLinear(self.rnn_size, calc_output_size(self.tgt_vocab_size))
+            advantages_nl1 = NoisyLinear(self.rnn_size, self.rnn_size, device=config.device)
+            advantages_nl2 = NoisyLinear(self.rnn_size, calc_output_size(self.tgt_vocab_size), device=config.device)
             self.advantages = nn.Sequential(
                 advantages_nl1,
                 #nn.ReLU(),
@@ -32,8 +32,8 @@ class Generator(nn.Module):
                 advantages_nl2
             )
 
-            value_nl1 = NoisyLinear(self.rnn_size, self.rnn_size)
-            value_nl2 = NoisyLinear(self.rnn_size, calc_output_size(1))
+            value_nl1 = NoisyLinear(self.rnn_size, self.rnn_size, device=config.device)
+            value_nl2 = NoisyLinear(self.rnn_size, calc_output_size(1), device=config.device)
             self.value = nn.Sequential(
                 value_nl1,
                 #nn.ReLU(),
@@ -42,7 +42,7 @@ class Generator(nn.Module):
             )
             self.noisy_layers = [advantages_nl1, advantages_nl2, value_nl1, value_nl2]
         else:
-            self.q_values = NoisyLinear(self.rnn_size, calc_output_size(self.tgt_vocab_size))
+            self.q_values = NoisyLinear(self.rnn_size, calc_output_size(self.tgt_vocab_size), device=config.device)
             self.noisy_layers = [self.q_values]
             
     def forward(self, x):
@@ -100,6 +100,7 @@ class DQN(nn.Module):
             self.quantile_weight = 1.0 / config.QUANTILES
                 
     def forward(self, src, tgt, lengths, bptt = False):
+        assert self.training == True
         if self.training: # Training with teacher forcing
             assert tgt is not None
             tgt = tgt[:-1]  # exclude last target from inputs
@@ -110,11 +111,11 @@ class DQN(nn.Module):
                                           memory_lengths=lengths)
             return dec_out, attns
 
-    def infer(self, src, src_lengths, batch_size):
-        pred = self._translate_random_sampling(src, src_lengths, batch_size)
+    def infer(self, src, src_lengths, batch_size, pretraining = False):
+        pred = self._translate_random_sampling(src, src_lengths, batch_size, pretraining = pretraining)
         return pred['predictions']
             
-    def _translate_random_sampling(self, src, src_lengths, batch_size, min_length=0, sampling_temp=1.0, keep_topk=1, return_attention=False):
+    def _translate_random_sampling(self, src, src_lengths, batch_size, min_length=0, sampling_temp=1.0, keep_topk=1, return_attention=False, pretraining=False):
 
         max_length = self.config.max_sequence_length + 1 # to account for EOS
         
@@ -141,9 +142,9 @@ class DQN(nn.Module):
             # Shape: (1, B, 1)
             decoder_input = random_sampler.alive_seq[:, -1].view(1, -1, 1)
 
-            log_probs, attn = self._decode_and_generate(decoder_input, memory_bank, memory_lengths, step)
+            log_probs, attn = self._decode_and_generate(decoder_input, memory_bank, memory_lengths, step, pretraining)
                         
-            if self.config.DISTRIBUTIONAL:
+            if self.config.DISTRIBUTIONAL and not pretraining:
                 log_probs = (log_probs * self.quantile_weight).sum(dim=3).squeeze(0)
                             
             random_sampler.advance(log_probs, attn)
@@ -172,20 +173,25 @@ class DQN(nn.Module):
         results["attention"] = random_sampler.attention
         return results
     
-    def _decode_and_generate(self, decoder_in, memory_bank, memory_lengths, step=None):
+    def _decode_and_generate(self, decoder_in, memory_bank, memory_lengths, step=None, pretraining=False):
 
         # Decoder forward, takes [tgt_len, batch, nfeats] as input
         # and [src_len, batch, hidden] as memory_bank
         # in case of inference tgt_len = 1, batch = beam times batch_size
+
         dec_out, dec_attn = self.decoder(
             decoder_in, memory_bank, memory_lengths=memory_lengths, step=step
         )
                 
-        self.update_noise() # TODO:
+        if not pretraining:
+            self.update_noise()
 
         # Generator forward.
         attn = dec_attn["std"] if "std" in dec_attn else attn
-        log_probs = self.generator(dec_out.squeeze(0))
+        if pretraining:
+            log_probs = self.pretrain_generator(dec_out.squeeze(0))
+        else:
+            log_probs = self.generator(dec_out.squeeze(0))
         # returns [(batch_size x beam_size) , vocab ] when 1 step
         # or [ tgt_len, batch_size, vocab ] when full sentence
         return log_probs, attn

@@ -20,6 +20,7 @@ tgt_text_field = vocab_fields['tgt'].base_field
 tgt_vocab = tgt_text_field.vocab
 tgt_padding = tgt_vocab.stoi[tgt_text_field.pad_token]
 
+config.vocab_fields = vocab_fields
 config.src_vocab = src_vocab
 config.tgt_vocab = tgt_vocab
 config.src_vocab_size = len(src_vocab)
@@ -87,4 +88,6 @@ trainer = QLearning(config,
                     optim=optim,
                     model_saver = model_saver)
 
+if config.SUPERVISED_PRETRAINING:
+    trainer.train(train_steps=150000, save_checkpoint_steps=25000)
 trainer.train(train_steps=2000000, save_checkpoint_steps=75000)

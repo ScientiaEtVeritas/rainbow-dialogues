@@ -106,24 +106,38 @@ class QLearning(object):
         
         self.pretrain_generator = nn.Sequential(
             nn.Linear(self.config.rnn_size, self.config.tgt_vocab_size),
-            nn.LogSoftmax(dim=-1)).to(self.config.device)
+            nn.LogSoftmax(dim=-1)
+        ).to(self.config.device)
+
+        self.current_model.pretrain_generator = self.pretrain_generator
+        self.target_model.pretrain_generator = self.pretrain_generator
         
         self.pretrain_loss = onmt.utils.loss.NMTLossCompute(
             criterion=nn.NLLLoss(ignore_index=self.config.tgt_padding, reduction="sum"),
             generator=self.pretrain_generator)
         
-        lr = 1
-        self.pretrain_optim = onmt.utils.optimizers.Optimizer(
-            torch.optim.SGD(self.current_model.parameters(), lr=lr), learning_rate=lr, max_grad_norm=2)
+        if self.config.optimizer == "adam":
+            torch_optimizer = torch.optim.Adam(self.current_model.parameters(), lr=self.config.LR)
+        elif self.config.optimizer == "ranger":
+            from lib.Ranger import Ranger
+            torch_optimizer = Ranger(self.current_model.parameters(), lr=self.config.LR)
+        self.pretrain_optim = onmt.utils.optimizers.Optimizer(torch_optimizer, learning_rate=self.config.LR, max_grad_norm=2)
+
+        model_saver = onmt.models.ModelSaver("checkpoints/pretrain_checkpoint", self.current_model, self.config, self.config.vocab_fields, self.pretrain_optim)
         
-        logging.info('Start training loop')
+        logging.info('Start pretraining - training loop')
 
         for i in range(train_steps):
             step = self.pretrain_optim.training_step
-            logger.info("Step " + str(step))
+            logger.info("Pretraining Step " + str(step))
             batch = self.model.sample_buffer.sample(self.config.BATCH_SIZE)
             normalization = self.config.BATCH_SIZE
             self._pretrain_step(batch, normalization)
+
+            if step % save_checkpoint_steps == 0:
+                model_saver.save(step)
+        
+        model_saver.save(step)
 
 
     def train(self,
@@ -142,11 +156,13 @@ class QLearning(object):
         Returns:
             The gathered statistics.
         """
-        logging.info('Start training loop')
+        logging.info('Start q-learning training loop')
+
+        self.model.update_target()
 
         for i in range(train_steps):
             step = self.optim.training_step
-            logger.info("Step " + str(step))
+            logger.info("Q-Learning Step " + str(step))
             #self._maybe_update_dropout(step) # UPDATE DROPOUT | NOTE: Dropout isn't usually used with RL
             
             batch = self.model.sample_from_memory(step)
@@ -215,28 +231,36 @@ class QLearning(object):
                 else:
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
 
-    def _valid(self, checkpoint_num = 0):
-        batch = self.model.sample_buffer.get_all()
+    def _valid(self, corpus_based = False, prefix = '', checkpoint_num = 0, sample_all = True, pretraining_inference=False):
+        prefix = (prefix + '_') if prefix != '' else prefix 
+        if sample_all:
+            batch = self.model.sample_buffer.get_all()
+        else:
+            batch = self.model.sample_buffer.sample(self.config.BATCH_SIZE)
+        tmp_batch_size = self.config.BATCH_SIZE
         self.config.BATCH_SIZE = len(batch)
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
         with torch.no_grad():
             self.current_model.eval()
-            predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
+            predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE, pretraining_inference)
             rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
-            self.model.save('reward_valid', rewards.sum().item(), checkpoint_num)
-            print(checkpoint_num, "---", rewards.sum().item() / self.config.BATCH_SIZE)
+            self.model.save(prefix + 'reward', rewards.sum().item(), checkpoint_num)
             for i, prediction in enumerate(predictions):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
                     text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})'
-                    self.model.save('sample_' + str(checkpoint_num), text, checkpoint_num)
+                    if corpus_based:
+                        self.model.save(prefix + 'sample' + str(checkpoint_num), text, checkpoint_num)
+                    else:
+                        self.model.save(prefix + 'sample', text, checkpoint_num)
                 else:
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
+        self.config.BATCH_SIZE = tmp_batch_size
                     
     def _pretrain_step(self, batch, normalization):
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
-        
+
         self.pretrain_optim.zero_grad()
         outputs, attns = self.current_model(src, tgt, src_lengths, bptt=False)
         
@@ -251,7 +275,14 @@ class QLearning(object):
 
             if loss is not None: # maybe already backwarded in train_loss
                 self.pretrain_optim.backward(loss)
-                self.grad_flow(self.current_model.named_parameters(), self.pretrain_optim.training_step)
+
+            if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_LOSS_EVERY == 0:
+                self.model.save('pretrain_loss', loss.item(), self.pretrain_optim.training_step)
+
+            if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_REWARD_EVERY == 0:
+                self._valid(prefix='pretrain', checkpoint_num=self.pretrain_optim.training_step, sample_all=False, pretraining_inference=True)
+                self.current_model.train()
+                self.target_model.train()
 
         except Exception:
             traceback.print_exc()
@@ -368,21 +399,12 @@ class QLearning(object):
             traceback.print_exc()
             logger.info("At step %d, we removed a batch", self.optim.training_step)
 
-        #for p in self.current_model.parameters():
-        #    if p.grad is not None:
-        #        print(p.grad.data.sum())
-
         self.optim.step()
 
         if self.current_model.decoder.state is not None:
             self.current_model.decoder.detach_state()
             
-    def grad_flow(self, named_parameters, tstep, plot = False):
-        '''Plots the gradients flowing through different layers in the net during training.
-        Can be used for checking for possible gradient vanishing / exploding problems.
-        
-        Usage: Plug this function in Trainer class after loss.backwards() as 
-        "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+    def grad_flow(self, named_parameters, tstep):
         ave_grads = []
         max_grads= []
         layers = []
@@ -396,19 +418,3 @@ class QLearning(object):
                 with open(os.path.join('logs', 'grad_flow.csv'), 'a') as f:
                     writer = csv.writer(f)
                     writer.writerow((tstep, n, mean_grad, max_grad))
-
-        if plot:
-            plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
-            plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
-            plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
-            plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
-            plt.xlim(left=0, right=len(ave_grads))
-            plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
-            plt.xlabel("Layers")
-            plt.ylabel("average gradient")
-            plt.title("Gradient flow")
-            plt.grid(True)
-            plt.legend([matplotlib.lines.Line2D([0], [0], color="c", lw=4),
-                        matplotlib.lines.Line2D([0], [0], color="b", lw=4),
-                        matplotlib.lines.Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
-            plt.show()
