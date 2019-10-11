@@ -224,12 +224,18 @@ class QLearning(object):
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
                     if self.optim.training_step % self.config.SAVE_SAMPLE_EVERY == 0:
-                        text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})'
+                        text = self.get_text(src_raw[i], tgt_raw[i], prediction_with_bos) +  f' ({rewards[i]})'
                         self.model.save('sample', text, self.optim.training_step)
                     idx = self.replay_memory.push(src_raw[i], prediction_with_bos, rewards[i])
                     logger.debug(f"Using / Replacing Index {idx}")
                 else:
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
+
+    def get_text(self, src, tgt, prediction_with_bos):
+        src_text = ' '.join([self.config.src_vocab.itos[token.item()] for token in src])
+        tgt_text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in tgt])
+        output_text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos])
+        return src_text + "  ||  " + output_text + "  ||  " + tgt_text 
 
     def _valid(self, corpus_based = False, prefix = '', checkpoint_num = 0, sample_all = True, pretraining_inference=False):
         prefix = (prefix + '_') if prefix != '' else prefix 
@@ -249,11 +255,12 @@ class QLearning(object):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
-                    text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos]) + f' ({rewards[i]})'
-                    if corpus_based:
-                        self.model.save(prefix + 'sample' + str(checkpoint_num), text, checkpoint_num)
-                    else:
-                        self.model.save(prefix + 'sample', text, checkpoint_num)
+                    if self.optim.training_step % self.config.SAVE_PRETRAIN_SAMPLE_EVERY == 0:
+                        text = self.get_text(src_raw[i], tgt_raw[i], prediction_with_bos) +  f' ({rewards[i]})'
+                        if corpus_based:
+                            self.model.save(prefix + 'sample' + str(checkpoint_num), text, checkpoint_num)
+                        else:
+                            self.model.save(prefix + 'sample', text, checkpoint_num)
                 else:
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
         self.config.BATCH_SIZE = tmp_batch_size

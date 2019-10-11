@@ -3,6 +3,7 @@ import torch
 class Config(object):
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.dataset = "data/cornell_raw_min_680_tok"
         
         # data hyperparameters
         self.max_sequence_length = 12
@@ -17,6 +18,7 @@ class Config(object):
         self.SUPERVISED_PRETRAINING = True 
         self.SAVE_PRETRAIN_LOSS_EVERY = 20
         self.SAVE_PRETRAIN_REWARD_EVERY = 5
+        self.SAVE_PRETRAIN_SAMPLE_EVERY = 100
         
         # DQN
         self.target_update_freq = 10000 # typically 10^4 to 10^6
@@ -36,7 +38,7 @@ class Config(object):
         # PER
         self.PER_ALPHA = 0.6 # The exponent α determines how much prioritization is used, with α = 0 corresponding to the uniform case.
         self.PER_BETA_START = 0.4 # We can correct this bias by using importance-sampling (IS) weights that fully compensates for the non-uniform probabilities P(i) if β = 1
-        self.BETA_MAX_ITER = 1500000
+        self.BETA_MAX_ITER = 1000000
         
         # misc agent and learning variables
         self.GAMMA = 0.99 # discount factor

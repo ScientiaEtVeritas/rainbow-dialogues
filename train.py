@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import onmt
+import random
 
 from Config import config
 from modules.DQN import DQN
@@ -10,7 +11,7 @@ from modules.Reward import Reward
 from modules.RLModelSaver import RLModelSaver
 from modules.QLearning import QLearning
 
-vocab_fields = torch.load("data/cornell_raw_min_900_tok.vocab.pt")
+vocab_fields = torch.load(config.dataset + ".vocab.pt")
 
 src_text_field = vocab_fields["src"].base_field
 src_vocab = src_text_field.vocab
@@ -32,7 +33,7 @@ config.tgt_unk = tgt_vocab.stoi[tgt_text_field.unk_token]
 config.tgt_bos = tgt_vocab.stoi[tgt_text_field.init_token]
 config.tgt_eos = tgt_vocab.stoi[tgt_text_field.eos_token]
 
-train_data_file = "data/cornell_raw_min_900_tok.train.0.pt"
+train_data_file = config.dataset + ".train.0.pt"
 train_iter = onmt.inputters.inputter.DatasetLazyIter(dataset_paths=[train_data_file],
                                                      fields=vocab_fields,
                                                      batch_size=1,
@@ -76,7 +77,8 @@ optim = onmt.utils.optimizers.Optimizer(torch_optimizer, learning_rate=config.LR
 
 model_saver = RLModelSaver("checkpoints/checkpoint", model, config, vocab_fields, optim)
 
-for example in filtered_data:
+random.Random(42).shuffle(filtered_data)
+for example in filtered_data[150:]:
     model.replay_memory.preload(example.src[0].squeeze(1), example.tgt.squeeze(1), 1)
     model.sample_buffer.preload(example.src[0].squeeze(1), example.tgt.squeeze(1), None)
 
