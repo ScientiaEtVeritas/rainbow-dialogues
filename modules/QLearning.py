@@ -255,7 +255,7 @@ class QLearning(object):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
-                    if self.optim.training_step % self.config.SAVE_PRETRAIN_SAMPLE_EVERY == 0:
+                    if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_SAMPLE_EVERY == 0:
                         text = self.get_text(src_raw[i], tgt_raw[i], prediction_with_bos) +  f' ({rewards[i]})'
                         if corpus_based:
                             self.model.save(prefix + 'sample' + str(checkpoint_num), text, checkpoint_num)
@@ -335,13 +335,14 @@ class QLearning(object):
             rewards = F.conv1d(rewards.permute(1, 2, 0), self.kernel, padding=self.padding).permute(2, 0, 1)
 
         # mask bc padding
-        mask = idxes.lt(tgt_lengths.unsqueeze(1)).t()[1:].float().unsqueeze(2)
+        mask_raw = idxes.lt(tgt_lengths.unsqueeze(1)).t()[1:].float().unsqueeze(2)
         
         if self.config.DISTRIBUTIONAL:
             rewards = rewards.unsqueeze(3)
-            mask = mask.unsqueeze(3)
+            mask = mask_raw.unsqueeze(3)
             zero_pad = torch.zeros((self.config.N_STEPS,self.config.BATCH_SIZE,1,self.config.QUANTILES), device=self.config.device)
         else:
+            mask = mask_raw
             zero_pad = torch.zeros((self.config.N_STEPS,self.config.BATCH_SIZE,1), device=self.config.device)
 
         masked_q_values = q_values * mask
@@ -372,8 +373,17 @@ class QLearning(object):
                 expected_q_values,
                 weights=weights,
                 density_weights=density_weights,
-                normalization=normalization,
+                tgt_lengths = tgt_lengths,
+                normalization_method=self.config.normalization_method,
                 shard_size=self.shard_size)
+
+            if self.config.value_penalty:
+                q_values_agg = target_net__q_outputs.sum(dim=3)
+                mean_q_values = q_values_agg.mean(dim=2)
+                diff = q_values_agg - mean_q_values.unsqueeze(2)
+                value_penalty = ((diff * mask_raw) ** 2).sum(dim=2)
+                value_penalty = (value_penalty.sum(0) / tgt_lengths.float()).mean()
+                loss += value_penalty
                         
             logger.debug(loss)
             

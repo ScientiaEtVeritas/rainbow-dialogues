@@ -91,5 +91,5 @@ trainer = QLearning(config,
                     model_saver = model_saver)
 
 if config.SUPERVISED_PRETRAINING:
-    trainer.train(train_steps=150000, save_checkpoint_steps=25000)
+    trainer.pretrain(train_steps=150000, save_checkpoint_steps=25000)
 trainer.train(train_steps=2000000, save_checkpoint_steps=75000)

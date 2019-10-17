@@ -27,6 +27,10 @@ class Config(object):
         self.N_STEPS = 4
         self.DISTRIBUTIONAL = True
         self.QUANTILES = 51 # if DISTRIBUTIONAL is true
+
+        # Reward / Loss
+        self.value_penalty = False
+        self.normalization_method = "sentence"
         
         # Replay Memory
         self.replay_type = "per" # options: er, per

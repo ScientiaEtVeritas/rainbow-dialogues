@@ -44,7 +44,8 @@ class MSELoss(onmt.utils.loss.LossComputeBase):
                  expected_q_values,
                  weights = None,
                  density_weights = None,
-                 normalization=1.0,
+                 tgt_lengths = None,
+                 normalization_method="batch",
                  shard_size=0,
                  trunc_start=0,
                  trunc_size=None):
@@ -80,21 +81,25 @@ class MSELoss(onmt.utils.loss.LossComputeBase):
             #loss, stats = self._compute_loss(batch, **shard_state)
             loss = self._compute_loss(batch, **shard_state)
             if density_weights is not None:
+                # value penalty
                 loss = (loss * density_weights).transpose(1,2)
                 if weights is not None:
                     weights = weights.view(-1, 1, 1)
                     priorities = loss.detach().mean(2).sum(-1).sum(0)
-                    loss = (loss * weights).mean(2).sum(-1).mean()
-                    return loss / float(normalization), priorities
+                    if normalization_method == "sentence":
+                        loss = ((loss * weights).mean(2).sum(-1).sum(0) / tgt_lengths.float()).mean()
+                    elif normalization_method == "batch":
+                        loss = (loss * weights).mean(2).sum(-1).mean()
+                    return loss, priorities
                 else: # TODO: implement distributional rl with plain er
                     pass
-            else:
+            else: # TODO: implement value penalty
                 if weights is not None:
                     loss = loss.sum(dim=0).squeeze() * weights
                 loss = loss.sum()
                 return loss / float(normalization), None
         #batch_stats = onmt.utils.Statistics()
-        for shard in shards(shard_state, shard_size): # TODO: implement weights for sharding (!)
+        for shard in shards(shard_state, shard_size): # TODO: implement sharding (!)
             #loss, stats
             loss = self._compute_loss(batch, **shard)
             loss.div(float(normalization)).backward()
