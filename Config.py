@@ -30,7 +30,7 @@ class Config(object):
 
         # Reward / Loss
         self.value_penalty = False
-        self.normalization_method = "sentence"
+        self.normalization_method = "sentence" # options: batch, sentence
         
         # Replay Memory
         self.replay_type = "per" # options: er, per
