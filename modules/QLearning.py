@@ -131,8 +131,7 @@ class QLearning(object):
             step = self.pretrain_optim.training_step
             logger.info("Pretraining Step " + str(step))
             batch = self.model.sample_buffer.sample(self.config.BATCH_SIZE)
-            normalization = self.config.BATCH_SIZE
-            self._pretrain_step(batch, normalization)
+            self._pretrain_step(batch)
 
             if step % save_checkpoint_steps == 0:
                 model_saver.save(step)
@@ -273,11 +272,13 @@ class QLearning(object):
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
         self.config.BATCH_SIZE = tmp_batch_size
                     
-    def _pretrain_step(self, batch, normalization):
+    def _pretrain_step(self, batch):
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
 
         self.pretrain_optim.zero_grad()
         outputs, attns = self.current_model(src, tgt, src_lengths, bptt=False)
+
+        normalization = (tgt_lengths - 1).sum()
         
         try:
             loss, batch_stats = self.pretrain_loss(
