@@ -12,7 +12,11 @@ class Reward(object):
         for ri, reward in enumerate(self.config.rewards):
             if reward == "BLEU":       
                 for dj in range(self.config.BATCH_SIZE):
-                    bleu_score = compute_bleu([[output[dj].tolist()]], [tgt[dj][1:].squeeze().tolist()], max_order=4, smooth = True)[0]
+                    otp = output[dj].tolist()
+                    otp = otp[:-1] if otp[-1] == self.config.tgt_eos else otp
+                    tgt_ = tgt[dj][1:].squeeze().tolist()
+                    tgt_ = tgt_[:-1] if tgt_[-1] == self.config.tgt_eos else tgt_
+                    bleu_score = compute_bleu([[tgt_]], [otp], max_order=4, smooth = True)[0]
                     rewards[dj][ri] = bleu_score
         
         # Weighting rewards
