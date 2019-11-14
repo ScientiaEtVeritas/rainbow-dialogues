@@ -5,6 +5,7 @@ import os
 import time
 import traceback
 from copy import deepcopy
+from modules.RLModelSaver import PretrainModelSaver
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -123,7 +124,7 @@ class QLearning(object):
             torch_optimizer = Ranger(self.current_model.parameters(), lr=self.config.LR)
         self.pretrain_optim = onmt.utils.optimizers.Optimizer(torch_optimizer, learning_rate=self.config.LR, max_grad_norm=2)
 
-        model_saver = onmt.models.ModelSaver("checkpoints/pretrain_checkpoint", self.current_model, self.config, self.config.vocab_fields, self.pretrain_optim)
+        model_saver = PretrainModelSaver("checkpoints/pretrain_checkpoint", self.model, self.config, self.config.vocab_fields, self.pretrain_optim)
         
         logging.info('Start pretraining - training loop')
 
@@ -244,7 +245,7 @@ class QLearning(object):
         output_text = ' '.join([self.config.tgt_vocab.itos[token.item()] for token in prediction_with_bos])
         return src_text + "  ||  " + output_text + "  ||  " + tgt_text 
 
-    def _valid(self, corpus_based = False, prefix = '', checkpoint_num = 0, sample_all = True, pretraining_inference=False):
+    def _valid(self, corpus_based = False, prefix = '', checkpoint_num = 0, sample_all = True, pretraining_inference=False, validation = False, infer_type = 'greedy'):
         prefix = (prefix + '_') if prefix != '' else prefix 
         if sample_all:
             batch = self.model.sample_buffer.get_all()
@@ -255,14 +256,15 @@ class QLearning(object):
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
         with torch.no_grad():
             self.current_model.eval()
-            predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE, pretraining_inference)
+            predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE, pretraining_inference, infer_type)
             rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
-            self.model.save(prefix + 'reward', rewards.sum().item(), checkpoint_num)
+            mean_reward = rewards.mean().item()
+            self.model.save(prefix + 'reward', mean_reward, checkpoint_num)
             for i, prediction in enumerate(predictions):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
-                    if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_SAMPLE_EVERY == 0:
+                    if validation or (self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_SAMPLE_EVERY == 0):
                         text = self.get_text(src_raw[i], tgt_raw[i], prediction_with_bos) +  f' ({rewards[i]})'
                         if corpus_based:
                             self.model.save(prefix + 'sample' + str(checkpoint_num), text, checkpoint_num)
@@ -271,6 +273,7 @@ class QLearning(object):
                 else:
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
         self.config.BATCH_SIZE = tmp_batch_size
+        return mean_reward
                     
     def _pretrain_step(self, batch):
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
@@ -296,7 +299,8 @@ class QLearning(object):
                 self.model.save('pretrain_loss', loss.item(), self.pretrain_optim.training_step)
 
             if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_REWARD_EVERY == 0:
-                self._valid(prefix='pretrain', checkpoint_num=self.pretrain_optim.training_step, sample_all=False, pretraining_inference=True)
+                self._valid(prefix='pretrain_greedy', checkpoint_num=self.pretrain_optim.training_step, sample_all=False, pretraining_inference=True)
+                self._valid(prefix='pretrain_beam', checkpoint_num=self.pretrain_optim.training_step, sample_all=False, pretraining_inference=True, infer_type='beam')
                 self.current_model.train()
                 self.target_model.train()
 
@@ -308,7 +312,7 @@ class QLearning(object):
 
         if self.current_model.decoder.state is not None:
             self.current_model.decoder.detach_state()
-
+        
 
     def _step(self, batch, normalization):
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)

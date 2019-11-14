@@ -6,6 +6,42 @@ from onmt.utils.logging import logger
 
 from copy import deepcopy
 
+class PretrainModelSaver(ModelSaverBase):
+    """Simple model saver to filesystem"""
+
+    def _save(self, step, model):
+        current_model_state_dict = model.current_model.state_dict()
+
+        # NOTE: We need to trim the vocab to remove any unk tokens that
+        # were not originally here.
+
+        vocab = deepcopy(self.fields)
+        for side in ["src", "tgt"]:
+            keys_to_pop = []
+            if hasattr(vocab[side], "fields"):
+                unk_token = vocab[side].fields[0][1].vocab.itos[0]
+                for key, value in vocab[side].fields[0][1].vocab.stoi.items():
+                    if value == 0 and key != unk_token:
+                        keys_to_pop.append(key)
+                for key in keys_to_pop:
+                    vocab[side].fields[0][1].vocab.stoi.pop(key, None)
+
+        checkpoint = {
+            'current_model': current_model_state_dict,
+            'vocab': vocab,
+            'opt': self.model_opt, # config
+            'optim': self.optim.state_dict(),
+        }
+        
+        logger.info("Saving model checkpoint %s_step_%d.pt" % (self.base_path, step))
+        checkpoint_path = '%s_step_%d.pt' % (self.base_path, step)
+        torch.save(checkpoint, checkpoint_path)
+                
+        return checkpoint, checkpoint_path
+
+    def _rm_checkpoint(self, name):
+        os.remove(name)
+
 class RLModelSaver(ModelSaverBase):
     """Simple model saver to filesystem"""
 

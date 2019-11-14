@@ -5,6 +5,9 @@ import onmt
 import onmt.modules
 
 from onmt.translate.random_sampling import RandomSampling
+from onmt.translate.beam_search import BeamSearch
+from onmt.utils.misc import tile
+from onmt.translate import GNMTGlobalScorer
 
 from modules.NoisyLinear import NoisyLinear
 from lib.Mish import Mish
@@ -98,6 +101,12 @@ class DQN(nn.Module):
         
         if config.DISTRIBUTIONAL:
             self.quantile_weight = 1.0 / config.QUANTILES
+
+        # for supervised inference / beam search
+        self.scorer = GNMTGlobalScorer(alpha=0.7, 
+                                    beta=0., 
+                                    length_penalty="avg", 
+                                    coverage_penalty="none")
                 
     def forward(self, src, tgt, lengths, bptt = False):
         assert self.training == True
@@ -111,9 +120,100 @@ class DQN(nn.Module):
                                           memory_lengths=lengths)
             return dec_out, attns
 
-    def infer(self, src, src_lengths, batch_size, pretraining = False):
-        pred = self._translate_random_sampling(src, src_lengths, batch_size, pretraining = pretraining)
+    def infer(self, src, src_lengths, batch_size, pretraining = False, infer_type = 'greedy'):
+        assert infer_type in ['greedy', 'beam']
+        if infer_type == 'greedy':
+            pred = self._translate_random_sampling(src, src_lengths, batch_size, pretraining = pretraining)
+        elif infer_type == 'beam':
+            pred = self._translate_batch(src, src_lengths, batch_size)
         return pred['predictions']
+
+    def _translate_batch(
+            self,
+            src,
+            src_lengths,
+            batch_size,
+            min_length=0,
+            ratio=0.,
+            n_best=1,
+            return_attention=False):
+
+        max_length = self.config.max_sequence_length + 1 # to account for EOS
+        beam_size = 3
+        
+        # Encoder forward.
+        enc_states, memory_bank, src_lengths = self.encoder(src, src_lengths)
+        self.decoder.init_state(src, memory_bank, enc_states)
+
+        results = { "predictions": None, "scores": None, "attention": None }
+
+        # (2) Repeat src objects `beam_size` times.
+        # We use batch_size x beam_size
+        self.decoder.map_state(lambda state, dim: tile(state, beam_size, dim=dim))
+
+        #if isinstance(memory_bank, tuple):
+        #    memory_bank = tuple(tile(x, beam_size, dim=1) for x in memory_bank)
+        #    mb_device = memory_bank[0].device
+        #else:
+        memory_bank = tile(memory_bank, beam_size, dim=1)
+        mb_device = memory_bank.device
+        memory_lengths = tile(src_lengths, beam_size)
+
+        mb_device = memory_bank[0].device if isinstance(memory_bank, tuple) else memory_bank.device
+        
+        block_ngram_repeat = 0
+        _exclusion_idxs = {}
+
+        # (0) pt 2, prep the beam object
+        beam = BeamSearch(
+            beam_size,
+            n_best=n_best,
+            batch_size=batch_size,
+            global_scorer=self.scorer,
+            pad=self.config.tgt_padding,
+            eos=self.config.tgt_eos,
+            bos=self.config.tgt_bos,
+            min_length=min_length,
+            ratio=ratio,
+            max_length=max_length,
+            mb_device=mb_device,
+            return_attention=return_attention,
+            stepwise_penalty=None,
+            block_ngram_repeat=block_ngram_repeat,
+            exclusion_tokens=_exclusion_idxs,
+            memory_lengths=memory_lengths)
+
+        for step in range(max_length):
+            decoder_input = beam.current_predictions.view(1, -1, 1)
+
+            log_probs, attn = self._decode_and_generate(decoder_input, memory_bank, memory_lengths, step, pretraining = True)
+
+            beam.advance(log_probs, attn)
+            any_beam_is_finished = beam.is_finished.any()
+            if any_beam_is_finished:
+                beam.update_finished()
+                if beam.done:
+                    break
+
+            select_indices = beam.current_origin
+
+            if any_beam_is_finished:
+                # Reorder states.
+                if isinstance(memory_bank, tuple):
+                    memory_bank = tuple(x.index_select(1, select_indices)
+                                        for x in memory_bank)
+                else:
+                    memory_bank = memory_bank.index_select(1, select_indices)
+
+                memory_lengths = memory_lengths.index_select(0, select_indices)
+
+            self.decoder.map_state(
+                lambda state, dim: state.index_select(dim, select_indices))
+
+        results["scores"] = beam.scores
+        results["predictions"] = beam.predictions
+        results["attention"] = beam.attention
+        return results
             
     def _translate_random_sampling(self, src, src_lengths, batch_size, min_length=0, sampling_temp=1.0, keep_topk=1, return_attention=False, pretraining=False):
 
