@@ -105,17 +105,11 @@ class QLearning(object):
               train_steps,
               save_checkpoint_steps=5000):
         
-        self.pretrain_generator = nn.Sequential(
-            nn.Linear(self.config.rnn_size, self.config.tgt_vocab_size),
-            nn.LogSoftmax(dim=-1)
-        ).to(self.config.device)
-
-        self.current_model.pretrain_generator = self.pretrain_generator
-        self.target_model.pretrain_generator = self.pretrain_generator
+        self.target_model.pretrain_generator = self.current_model.pretrain_generator
         
         self.pretrain_loss = onmt.utils.loss.NMTLossCompute(
             criterion=nn.NLLLoss(ignore_index=self.config.tgt_padding, reduction="sum"),
-            generator=self.pretrain_generator)
+            generator=self.current_model.pretrain_generator)
         
         if self.config.optimizer == "adam":
             torch_optimizer = torch.optim.Adam(self.current_model.parameters(), lr=self.config.LR)
@@ -163,7 +157,7 @@ class QLearning(object):
             logger.info("Initialize Parameter with Model File: " + pretrained_model_file)
             pretrained_model = torch.load(pretrained_model_file)
             params = self.model.current_model.state_dict()
-            params.update(pretrained_model['model'])
+            params.update(pretrained_model['current_model'])
             self.model.current_model.load_state_dict(params)
 
         self.model.update_target()

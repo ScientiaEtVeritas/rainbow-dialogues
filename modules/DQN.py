@@ -102,6 +102,12 @@ class DQN(nn.Module):
         if config.DISTRIBUTIONAL:
             self.quantile_weight = 1.0 / config.QUANTILES
 
+        # Supervised Learning
+        self.pretrain_generator = nn.Sequential(
+            nn.Linear(self.config.rnn_size, self.config.tgt_vocab_size),
+            nn.LogSoftmax(dim=-1)
+        )
+
         # for supervised inference / beam search
         self.scorer = GNMTGlobalScorer(alpha=0.7, 
                                     beta=0., 
