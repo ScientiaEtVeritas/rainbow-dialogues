@@ -6,7 +6,6 @@ class Config(object):
         self.dataset = "data/cornell_raw_min_680_tok"
         
         # data hyperparameters
-        self.max_sequence_length = 12
         self.min_token_occurrences = 20
         
         # seq2seq hyperparameters
@@ -14,8 +13,13 @@ class Config(object):
         self.emb_size = 100
         self.rnn_size = 500
 
+        self.LEARNING_METHOD = 0
+        # 0: Supervised Learning
+        # 1: Q-learning
+        # 2: Supervised Learning and Q-learning
+        # 3: Multitask Learning
+
         # Supervised Pretraining
-        self.SUPERVISED_PRETRAINING = True 
         self.SAVE_PRETRAIN_LOSS_EVERY = 20
         self.SAVE_PRETRAIN_REWARD_EVERY = 5
         self.SAVE_PRETRAIN_SAMPLE_EVERY = 100

@@ -68,6 +68,7 @@ class QLearning(object):
         self.valid_loss = valid_loss
 
         self.optim = optim
+        self.pretrain_optim = None
 
         # Meta attributes
         self.shard_size = shard_size
@@ -100,17 +101,38 @@ class QLearning(object):
     #            self.current_model.update_dropout(self.dropout[i])
     #            logger.info("Updated dropout to %f from step %d"
     #                        % (self.dropout[i], step))
-                    
-    def pretrain(self,
-              train_steps,
-              save_checkpoint_steps=5000):
-        
+
+    def multitask_train(self, train_steps, pretrain_per=50, train_per=50, save_checkpoint_steps=5000):
+
+        mtl_steps = round(train_steps / (pretrain_per + train_per))
+
+        logger.info(f"Starting Multitask Learning for {mtl_steps} steps with {pretrain_per} supervised steps and {train_per} q-learning steps")
+
+        for i in range(1,mtl_steps+1): 
+            mtl_step_i_before = ((i-1) * (pretrain_per + train_per))
+            mtl_step_i_between = ((i-1) * (pretrain_per + train_per) + pretrain_per)
+            mtl_step_i_after = (i * (pretrain_per + train_per))
+            logger.info(f"-- Multitask Learning step {i}")
+            self.pretrain(train_steps=pretrain_per, save_checkpoint_steps=0, save_at_end=False, mtl_offset=mtl_step_i_before)
+            self.train(train_steps=train_per, save_checkpoint_steps=0, save_at_end=False, mtl_offset=mtl_step_i_between)
+
+            logger.info(f"-- Multitask Learning finished total steps of {mtl_step_i_after}")
+            if mtl_step_i_after % save_checkpoint_steps == 0:
+                self.pretrain_model_saver.save(mtl_step_i_after)
+                self.model_saver.save(mtl_step_i_after)
+
+        mtl_step_final = (mtl_steps * (pretrain_per + train_per))
+        logger.info(f"-- Ending Multitask Learning finished with total steps of {mtl_step_final}")
+        self.pretrain_model_saver.save(mtl_step_final)
+        self.model_saver.save(mtl_step_final)
+
+
+    def pretrain_init(self):
         self.target_model.pretrain_generator = self.current_model.pretrain_generator
-        
         self.pretrain_loss = onmt.utils.loss.NMTLossCompute(
             criterion=nn.NLLLoss(ignore_index=self.config.tgt_padding, reduction="sum"),
             generator=self.current_model.pretrain_generator)
-        
+
         if self.config.optimizer == "adam":
             torch_optimizer = torch.optim.Adam(self.current_model.parameters(), lr=self.config.LR)
         elif self.config.optimizer == "ranger":
@@ -118,26 +140,47 @@ class QLearning(object):
             torch_optimizer = Ranger(self.current_model.parameters(), lr=self.config.LR)
         self.pretrain_optim = onmt.utils.optimizers.Optimizer(torch_optimizer, learning_rate=self.config.LR, max_grad_norm=2)
 
-        model_saver = PretrainModelSaver("checkpoints/pretrain_checkpoint", self.model, self.config, self.config.vocab_fields, self.pretrain_optim)
-        
+        self.pretrain_model_saver = PretrainModelSaver("checkpoints/pretrain_checkpoint", self.model, self.config, self.config.vocab_fields, self.pretrain_optim)
+
+                    
+    def pretrain(self,
+              train_steps,
+              save_checkpoint_steps=5000,
+              save_at_end = True,
+              mtl_offset=0):
+
+        if self.pretrain_optim is None:
+            self.pretrain_init()
+                
         logging.info('Start pretraining - training loop')
 
-        for i in range(train_steps):
+        for i in range(1,train_steps+1):
             step = self.pretrain_optim.training_step
             logger.info("Pretraining Step " + str(step))
             batch = self.model.sample_buffer.sample(self.config.BATCH_SIZE)
-            self._pretrain_step(batch)
+            self._pretrain_step(batch, step if mtl_offset == 0 else mtl_offset + i)
 
-            if step % save_checkpoint_steps == 0:
-                model_saver.save(step)
+            if save_checkpoint_steps != 0 and step % save_checkpoint_steps == 0:
+                self.pretrain_model_saver.save(step)
         
-        model_saver.save(step)
+        if save_at_end:
+            self.pretrain_model_saver.save(step)
+
+    def train_init(self, pretrained_model_file):
+        if pretrained_model_file:
+            logger.info("Initialize Parameter with Model File: " + pretrained_model_file)
+            pretrained_model = torch.load(pretrained_model_file)
+            params = self.model.current_model.state_dict()
+            params.update(pretrained_model['current_model'])
+            self.model.current_model.load_state_dict(params)
 
 
     def train(self,
               train_steps,
               save_checkpoint_steps=5000,
-              pretrained_model_file = None):
+              pretrained_model_file = None,
+              save_at_end = True,
+              mtl_offset=0):
         """
         The main training loop by iterating over `train_iter` and possibly
         running validation on `valid_iter`.
@@ -151,18 +194,15 @@ class QLearning(object):
         Returns:
             The gathered statistics.
         """
-        logging.info('Start q-learning training loop')
 
-        if pretrained_model_file:
-            logger.info("Initialize Parameter with Model File: " + pretrained_model_file)
-            pretrained_model = torch.load(pretrained_model_file)
-            params = self.model.current_model.state_dict()
-            params.update(pretrained_model['current_model'])
-            self.model.current_model.load_state_dict(params)
+        if self.optim.training_step == 1:
+            self.train_init(pretrained_model_file)
+
+        logging.info('Start q-learning training loop')
 
         self.model.update_target()
 
-        for i in range(train_steps):
+        for i in range(1,train_steps+1):
             step = self.optim.training_step
             logger.info("Q-Learning Step " + str(step))
             #self._maybe_update_dropout(step) # UPDATE DROPOUT | NOTE: Dropout isn't usually used with RL
@@ -176,7 +216,10 @@ class QLearning(object):
             #    logger.info("GpuRank %d: reduce_counter: %d" % (self.gpu_rank, i + 1))
             
             if step > self.config.PRETRAIN_ITER and step % self.config.SAMPLE_EVERY == 0:
-                self._sample()
+                if mtl_offset != 0:
+                    self._sample(mtl_offset + i)
+                else:
+                    self._sample()
 
             self._step(batch, normalization)
 
@@ -187,10 +230,7 @@ class QLearning(object):
             if (self.model_saver is not None and (save_checkpoint_steps != 0 and step % save_checkpoint_steps == 0)):
                 self.model_saver.save(step)
 
-            if train_steps > 0 and step >= train_steps:
-                break
-
-        if self.model_saver is not None:
+        if self.model_saver is not None and save_at_end:
             self.model_saver.save(step)
 
     def _process_batch(self, batch):
@@ -212,22 +252,26 @@ class QLearning(object):
 
         return true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per
 
-    def _sample(self):
+    def _sample(self, mtl_step=None):
         logger.info("Sampling: Collecting new data")
         batch = self.model.sample_buffer.sample(self.config.BATCH_SIZE)
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
+        if mtl_step:
+            step = mtl_step
+        else:
+            step = self.optim.training_step
         with torch.no_grad():
             self.current_model.update_noise()
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
             rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
-            self.model.save('reward', rewards.sum().item(), self.optim.training_step)
+            self.model.save('reward', rewards.sum().item(), step)
             for i, prediction in enumerate(predictions):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
                     if self.optim.training_step % self.config.SAVE_SAMPLE_EVERY == 0:
                         text = self.get_text(src_raw[i], tgt_raw[i], prediction_with_bos) +  f' ({rewards[i]})'
-                        self.model.save('sample', text, self.optim.training_step)
+                        self.model.save('sample', text, step)
                     idx = self.replay_memory.push(src_raw[i], prediction_with_bos, rewards[i])
                     logger.debug(f"Using / Replacing Index {idx}")
                 else:
@@ -269,7 +313,7 @@ class QLearning(object):
         self.config.BATCH_SIZE = tmp_batch_size
         return mean_reward
                     
-    def _pretrain_step(self, batch):
+    def _pretrain_step(self, batch, step):
         true_batch, src, tgt, src_lengths, tgt_lengths, src_raw, tgt_raw, reward, per = self._process_batch(batch)
 
         self.pretrain_optim.zero_grad()
@@ -290,11 +334,11 @@ class QLearning(object):
                 self.pretrain_optim.backward(loss)
 
             if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_LOSS_EVERY == 0:
-                self.model.save('pretrain_loss', loss.item(), self.pretrain_optim.training_step)
+                self.model.save('pretrain_loss', loss.item(), step)
 
             if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_REWARD_EVERY == 0:
-                self._valid(prefix='pretrain_greedy', checkpoint_num=self.pretrain_optim.training_step, sample_all=False, pretraining_inference=True)
-                self._valid(prefix='pretrain_beam', checkpoint_num=self.pretrain_optim.training_step, sample_all=False, pretraining_inference=True, infer_type='beam')
+                self._valid(prefix='pretrain_greedy', checkpoint_num=step, sample_all=False, pretraining_inference=True)
+                self._valid(prefix='pretrain_beam', checkpoint_num=step, sample_all=False, pretraining_inference=True, infer_type='beam')
                 self.current_model.train()
                 self.target_model.train()
 

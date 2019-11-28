@@ -46,9 +46,13 @@ train_iter = onmt.inputters.inputter.DatasetLazyIter(dataset_paths=[train_data_f
 
 data = list(train_iter)
 filtered_data = []
+max_length = 0
 for x in data:
     if not ((x.src[0].squeeze() == config.src_unk).any() or (x.tgt.squeeze() == config.tgt_unk).any()):
-        filtered_data.append(x)          
+        max_length = max(max_length,max(x.src[0].size(0), x.tgt.size(0)))
+        filtered_data.append(x)
+
+config.max_sequence_length = max_length - 2 # bos, eos
 config.PRELOADING_SIZE = len(filtered_data)
 
 model = Model(config, DQN)
@@ -90,6 +94,10 @@ trainer = QLearning(config,
                     optim=optim,
                     model_saver = model_saver)
 
-if config.SUPERVISED_PRETRAINING:
-    trainer.pretrain(train_steps=150000, save_checkpoint_steps=25000)
-trainer.train(train_steps=2000000, save_checkpoint_steps=75000)
+if config.LEARNING_METHOD == 3:
+    trainer.multitask_train(train_steps=150000, pretrain_per=50, train_per=50, save_checkpoint_steps=10000)
+else:
+    if config.LEARNING_METHOD in [0,2]:
+        trainer.pretrain(train_steps=150000, save_checkpoint_steps=25000)
+    if config.LEARNING_METHOD in [1,2]:
+        trainer.train(train_steps=2000000, save_checkpoint_steps=75000)
