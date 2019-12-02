@@ -102,9 +102,12 @@ class QLearning(object):
     #            logger.info("Updated dropout to %f from step %d"
     #                        % (self.dropout[i], step))
 
-    def multitask_train(self, train_steps, pretrain_per=50, train_per=50, save_checkpoint_steps=5000):
+    def multitask_train(self, train_steps, pretrain_per=50, train_per=50, stop_pretrain_after=None, save_checkpoint_steps=5000):
 
-        mtl_steps = round(train_steps / (pretrain_per + train_per))
+        if stop_pretrain_after is None:
+            stop_pretrain_after = train_steps
+
+        mtl_steps = round(stop_pretrain_after / (pretrain_per + train_per))
 
         logger.info(f"Starting Multitask Learning for {mtl_steps} steps with {pretrain_per} supervised steps and {train_per} q-learning steps")
 
@@ -125,6 +128,11 @@ class QLearning(object):
         logger.info(f"-- Ending Multitask Learning finished with total steps of {mtl_step_final}")
         self.pretrain_model_saver.save(mtl_step_final)
         self.model_saver.save(mtl_step_final)
+
+        if stop_pretrain_after is not None:
+            train_steps = train_steps - stop_pretrain_after
+            logger.info(f"-- Starting pure Q-learning for {train_steps} steps")
+            self.train(train_steps=train_steps, save_checkpoint_steps=save_checkpoint_steps, save_at_end=True, mtl_offset=stop_pretrain_after)
 
 
     def pretrain_init(self):
@@ -231,7 +239,7 @@ class QLearning(object):
                 self.model_saver.save(step)
 
         if self.model_saver is not None and save_at_end:
-            self.model_saver.save(step)
+            self.model_saver.save(mtl_offset + train_steps)
 
     def _process_batch(self, batch):
 
