@@ -102,22 +102,24 @@ class QLearning(object):
     #            logger.info("Updated dropout to %f from step %d"
     #                        % (self.dropout[i], step))
 
-    def multitask_train(self, train_steps, pretrain_per=50, train_per=50, stop_pretrain_after=None, save_checkpoint_steps=5000):
+    def multitask_train(self, train_steps, pretrain_per=50, train_per=50, schedule_by=None, stop_pretrain_after=None, save_checkpoint_steps=5000):
 
         if stop_pretrain_after is None:
             stop_pretrain_after = train_steps
-
-        mtl_steps = round(stop_pretrain_after / (pretrain_per + train_per))
+            mtl_steps = round(stop_pretrain_after / (pretrain_per + train_per))
+        
+        if schedule_by is not None:
+            mtl_steps = round((stop_pretrain_after - schedule_by) / (pretrain_per + train_per))
 
         logger.info(f"Starting Multitask Learning for {mtl_steps} steps with {pretrain_per} supervised steps and {train_per} q-learning steps")
 
         for i in range(1,mtl_steps+1): 
             mtl_step_i_before = ((i-1) * (pretrain_per + train_per))
-            mtl_step_i_between = ((i-1) * (pretrain_per + train_per) + pretrain_per)
+            mtl_step_i_between = ((i-1) * (pretrain_per + train_per) + train_per)
             mtl_step_i_after = (i * (pretrain_per + train_per))
             logger.info(f"-- Multitask Learning step {i}")
-            self.pretrain(train_steps=pretrain_per, save_checkpoint_steps=0, save_at_end=False, mtl_offset=mtl_step_i_before)
-            self.train(train_steps=train_per, save_checkpoint_steps=0, save_at_end=False, mtl_offset=mtl_step_i_between)
+            self.train(train_steps=train_per, save_checkpoint_steps=0, save_at_end=False, mtl_offset=mtl_step_i_before)
+            self.pretrain(train_steps=pretrain_per, save_checkpoint_steps=0, save_at_end=False, mtl_offset=mtl_step_i_between)
 
             logger.info(f"-- Multitask Learning finished total steps of {mtl_step_i_after}")
             if mtl_step_i_after % save_checkpoint_steps == 0:
@@ -129,10 +131,26 @@ class QLearning(object):
         self.pretrain_model_saver.save(mtl_step_final)
         self.model_saver.save(mtl_step_final)
 
+        if schedule_by is not None:
+            scheduling_steps = stop_pretrain_after - schedule_by
+            per_scheduling = round(scheduling_steps / pretrain_per)
+            logger.info(f"-- Start Multitask Scheduling mechanism for {scheduling_steps} steps, reducing {pretrain_per} to 0 every {per_scheduling} steps")
+            for schedule_minus in range(1,pretrain_per+1):
+                pretrain_per_schedule = pretrain_per - schedule_minus
+                mtl_steps = round(per_scheduling / (pretrain_per_schedule + train_per))
+                logger.info(f"-- Reduced pretrain_per to {pretrain_per_schedule} -- running {mtl_steps} steps!")
+                for i in range(1,mtl_steps+1): 
+                    mtl_step_i_before = mtl_step_final
+                    mtl_step_i_between = mtl_step_final + train_per
+                    mtl_step_final = mtl_step_final + train_per + pretrain_per_schedule
+                    self.pretrain(train_steps=pretrain_per_schedule, save_checkpoint_steps=0, save_at_end=False, mtl_offset=mtl_step_i_before)
+                    self.train(train_steps=train_per, save_checkpoint_steps=0, save_at_end=False, mtl_offset=mtl_step_i_between)
+                logger.info(f"-- In total: {mtl_step_final} MTL Steps!")
+
         if stop_pretrain_after is not None:
             train_steps = train_steps - stop_pretrain_after
             logger.info(f"-- Starting pure Q-learning for {train_steps} steps")
-            self.train(train_steps=train_steps, save_checkpoint_steps=save_checkpoint_steps, save_at_end=True, mtl_offset=stop_pretrain_after)
+            self.train(train_steps=train_steps, save_checkpoint_steps=save_checkpoint_steps, save_at_end=True, mtl_offset=mtl_step_final)
 
 
     def pretrain_init(self):
