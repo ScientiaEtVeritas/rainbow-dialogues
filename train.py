@@ -92,7 +92,8 @@ trainer = QLearning(config,
                     train_loss=loss,
                     valid_loss=loss,
                     optim=optim,
-                    model_saver = model_saver)
+                    model_saver = model_saver,
+                    logs_folder='')
 
 if config.LEARNING_METHOD == 3:
     trainer.multitask_train(train_steps=150000, pretrain_per=25, train_per=100, stop_pretrain_after=100000, save_checkpoint_steps=10000)

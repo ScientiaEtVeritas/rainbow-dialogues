@@ -54,7 +54,8 @@ class QLearning(object):
                  n_gpu=1, gpu_rank=1,
                  gpu_verbose_level=0, model_saver=None,
                  average_decay=0, average_every=1, model_dtype='fp32',
-                 earlystopper=None): # dropout=[0.3], dropout_steps=[0]
+                 earlystopper=None,
+                 logs_folder=''): # dropout=[0.3], dropout_steps=[0]
 
         # RL attributes
         self.config = config
@@ -71,6 +72,7 @@ class QLearning(object):
         self.pretrain_optim = None
 
         # Meta attributes
+        self.logs_folder = logs_folder
         self.shard_size = shard_size
         self.n_gpu = n_gpu
         self.gpu_rank = gpu_rank
@@ -166,7 +168,7 @@ class QLearning(object):
             torch_optimizer = Ranger(self.current_model.parameters(), lr=self.config.LR)
         self.pretrain_optim = onmt.utils.optimizers.Optimizer(torch_optimizer, learning_rate=self.config.LR, max_grad_norm=2)
 
-        self.pretrain_model_saver = PretrainModelSaver("checkpoints/pretrain_checkpoint", self.model, self.config, self.config.vocab_fields, self.pretrain_optim)
+        self.pretrain_model_saver = PretrainModelSaver(os.path.join('checkpoints', self.logs_folder, 'pretrain_checkpoint'), self.model, self.config, self.config.vocab_fields, self.pretrain_optim)
 
                     
     def pretrain(self,
@@ -290,14 +292,14 @@ class QLearning(object):
             self.current_model.update_noise()
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE)
             rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
-            self.model.save('reward', rewards.sum().item(), step)
+            self.model.save('reward', rewards.sum().item(), step, self.logs_folder)
             for i, prediction in enumerate(predictions):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
                     prediction_with_bos = prediction_with_bos.unsqueeze(1)
                     if self.optim.training_step % self.config.SAVE_SAMPLE_EVERY == 0:
                         text = self.get_text(src_raw[i], tgt_raw[i], prediction_with_bos) +  f' ({rewards[i]})'
-                        self.model.save('sample', text, step)
+                        self.model.save('sample', text, step, self.logs_folder)
                     idx = self.replay_memory.push(src_raw[i], prediction_with_bos, rewards[i])
                     logger.debug(f"Using / Replacing Index {idx}")
                 else:
@@ -323,7 +325,7 @@ class QLearning(object):
             predictions = self.current_model.infer(src, src_lengths, self.config.BATCH_SIZE, pretraining_inference, infer_type)
             rewards = self.reward(src_raw, predictions, tgt_raw) # predictions are without BOS, tgt is with
             mean_reward = rewards.mean().item()
-            self.model.save(prefix + 'reward', mean_reward, checkpoint_num)
+            self.model.save(prefix + 'reward', mean_reward, checkpoint_num, self.logs_folder)
             for i, prediction in enumerate(predictions):
                 prediction_with_bos = torch.cat((torch.LongTensor([self.config.tgt_bos]).to(self.config.device), prediction[0]))
                 if prediction_with_bos.size(0) > 1:
@@ -331,9 +333,9 @@ class QLearning(object):
                     if validation or (self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_SAMPLE_EVERY == 0):
                         text = self.get_text(src_raw[i], tgt_raw[i], prediction_with_bos) +  f' ({rewards[i]})'
                         if corpus_based:
-                            self.model.save(prefix + 'sample' + str(checkpoint_num), text, checkpoint_num)
+                            self.model.save(prefix + 'sample' + str(checkpoint_num), text, checkpoint_num, self.logs_folder)
                         else:
-                            self.model.save(prefix + 'sample', text, checkpoint_num)
+                            self.model.save(prefix + 'sample', text, checkpoint_num, self.logs_folder)
                 else:
                     logger.debug(f"Inference {i} failed: " + repr(prediction_with_bos))
         self.config.BATCH_SIZE = tmp_batch_size
@@ -360,7 +362,7 @@ class QLearning(object):
                 self.pretrain_optim.backward(loss)
 
             if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_LOSS_EVERY == 0:
-                self.model.save('pretrain_loss', loss.item(), step)
+                self.model.save('pretrain_loss', loss.item(), step, self.logs_folder)
 
             if self.pretrain_optim.training_step % self.config.SAVE_PRETRAIN_REWARD_EVERY == 0:
                 self._valid(prefix='pretrain_greedy', checkpoint_num=step, sample_all=False, pretraining_inference=True)
@@ -439,7 +441,7 @@ class QLearning(object):
             weights, idxes = per
             weights = torch.Tensor(weights).to(self.config.device)
             if self.optim.training_step % self.config.SAVE_PER_WEIGHTS_EVERY == 0:
-                self.model.save('per_weights', weights.sum().item(), self.optim.training_step)
+                self.model.save('per_weights', weights.sum().item(), self.optim.training_step, self.logs_folder)
                         
         # Compute loss
         try:
@@ -455,9 +457,9 @@ class QLearning(object):
                 shard_size=self.shard_size)
 
             if self.config.value_penalty:
-                q_values_agg = target_net__q_outputs.sum(dim=3)
+                q_values_agg = target_net__q_outputs.mean(dim=3)
                 mean_q_values = q_values_agg.mean(dim=2)
-                diff = q_values_agg - mean_q_values.unsqueeze(2)
+                diff = q_values_agg - 1 #mean_q_values.unsqueeze(2)
                 value_penalty = ((diff * mask_raw) ** 2).sum(dim=2)
                 value_penalty = (value_penalty.sum(0) / tgt_lengths.float()).mean()
                 loss += value_penalty
@@ -477,7 +479,7 @@ class QLearning(object):
                     priorities = priorities.cpu().tolist()
                     self.replay_memory.update_priorities(idxes, priorities)
                     if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
-                        self.model.save('td', abs_td.sum().item(), self.optim.training_step)
+                        self.model.save('td', abs_td.sum().item(), self.optim.training_step, self.logs_folder)
 
             if loss is not None: # maybe already backwarded in train_loss
                 self.optim.backward(loss)
@@ -485,9 +487,9 @@ class QLearning(object):
                     self.grad_flow(self.current_model.named_parameters(), self.optim.training_step)
             
             if self.optim.training_step % self.config.SAVE_SIGMA_EVERY == 0:
-                self.model.save_sigma_param_magnitudes(self.optim.training_step)
+                self.model.save_sigma_param_magnitudes(self.optim.training_step, self.logs_folder)
             if self.optim.training_step % self.config.SAVE_TD_EVERY == 0:
-                self.model.save('loss', loss.item(), self.optim.training_step)
+                self.model.save('loss', loss.item(), self.optim.training_step, self.logs_folder)
 
         except Exception:
             traceback.print_exc()

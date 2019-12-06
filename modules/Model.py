@@ -76,7 +76,7 @@ class Model(object):
                 return torch.zeros((0,self.config.BATCH_SIZE,1), device=self.config.device)
         return next_q_values
         
-    def save_sigma_param_magnitudes(self, tstep):
+    def save_sigma_param_magnitudes(self, tstep, folder=''):
         with torch.no_grad():
             sum_, count = 0.0, 0.0
             for name, param in self.current_model.named_parameters():
@@ -85,11 +85,15 @@ class Model(object):
                     count += np.prod(param.shape)
             
             if count > 0:
-                with open(os.path.join('logs', 'sig_param_mag.csv'), 'a') as f:
+                file = os.path.join('logs', folder, 'sig_param_mag.csv')
+                os.makedirs(os.path.dirname(file), exist_ok=True)
+                with open(os.path.join(file), 'a') as f:
                     writer = csv.writer(f)
                     writer.writerow((tstep, sum_/count))   
             
-    def save(self, type_, value, tstep):
-        with open(os.path.join('logs', type_ + '.csv'), 'a') as f:
+    def save(self, type_, value, tstep, folder=''):
+        file = os.path.join('logs', folder, type_ + '.csv')
+        os.makedirs(os.path.dirname(file), exist_ok=True)
+        with open(file, 'a') as f:
             writer = csv.writer(f)
             writer.writerow((tstep, value))
