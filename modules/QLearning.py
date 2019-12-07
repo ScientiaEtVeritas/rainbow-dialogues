@@ -457,7 +457,7 @@ class QLearning(object):
                 shard_size=self.shard_size)
 
             if self.config.value_penalty:
-                q_values_agg = target_net__q_outputs.mean(dim=3)
+                q_values_agg = current_net__q_outputs.mean(dim=3)
                 mean_q_values = q_values_agg.mean(dim=2)
                 diff = q_values_agg - 1 #mean_q_values.unsqueeze(2)
                 value_penalty = ((diff * mask_raw) ** 2).sum(dim=2)
@@ -511,6 +511,8 @@ class QLearning(object):
                 max_grad = p.grad.abs().max()
                 ave_grads.append(mean_grad)
                 max_grads.append(max_grad)
-                with open(os.path.join('logs', 'grad_flow.csv'), 'a') as f:
+                file = os.path.join('logs', self.logs_folder, 'sig_param_mag.csv')
+                os.makedirs(os.path.dirname(file), exist_ok=True)
+                with open(file, 'a') as f:
                     writer = csv.writer(f)
                     writer.writerow((tstep, n, mean_grad, max_grad))

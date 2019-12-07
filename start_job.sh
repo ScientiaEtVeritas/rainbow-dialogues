@@ -10,4 +10,10 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --time=4-23:59:58
 #SBATCH --output=train_log.out
-srun -u PYTHON_PATH train.py
+if [ -n "$1" ]
+    echo "Label $1"
+    srun -u PYTHON_PATH train.py $1
+else
+    echo "No Label"
+    srun -u PYTHON_PATH train.py
+

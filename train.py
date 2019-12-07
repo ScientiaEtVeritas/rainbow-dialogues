@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import onmt
 import random
+import os
+import sys
 
 from Config import config
 from modules.DQN import DQN
@@ -10,6 +12,12 @@ from modules.MSELoss import MSELoss
 from modules.Reward import Reward
 from modules.RLModelSaver import RLModelSaver
 from modules.QLearning import QLearning
+
+if len(sys.argv) > 1:
+    config.label = sys.argv[1]
+
+print("[LABEL] " + config.label)
+print("[DATASET]" + config.dataset)
 
 vocab_fields = torch.load(config.dataset + ".vocab.pt")
 
@@ -79,7 +87,9 @@ elif config.optimizer == "ranger":
     torch_optimizer = Ranger(model.current_model.parameters(), lr=config.LR)
 optim = onmt.utils.optimizers.Optimizer(torch_optimizer, learning_rate=config.LR, max_grad_norm=2)
 
-model_saver = RLModelSaver("checkpoints/checkpoint", model, config, vocab_fields, optim)
+checkpoint_file = os.path.join('checkpoints', config.label, 'checkpoint')
+os.makedirs(os.path.dirname(checkpoint_file), exist_ok=True)
+model_saver = RLModelSaver(checkpoint_file, model, config, vocab_fields, optim)
 
 random.Random(42).shuffle(filtered_data)
 for example in filtered_data[150:]:
@@ -93,7 +103,7 @@ trainer = QLearning(config,
                     valid_loss=loss,
                     optim=optim,
                     model_saver = model_saver,
-                    logs_folder='')
+                    logs_folder=config.label)
 
 if config.LEARNING_METHOD == 3:
     trainer.multitask_train(train_steps=150000, pretrain_per=25, train_per=100, stop_pretrain_after=100000, save_checkpoint_steps=10000)

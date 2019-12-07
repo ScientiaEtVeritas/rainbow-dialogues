@@ -87,7 +87,7 @@ class Model(object):
             if count > 0:
                 file = os.path.join('logs', folder, 'sig_param_mag.csv')
                 os.makedirs(os.path.dirname(file), exist_ok=True)
-                with open(os.path.join(file), 'a') as f:
+                with open(file, 'a') as f:
                     writer = csv.writer(f)
                     writer.writerow((tstep, sum_/count))   
             

@@ -4,6 +4,8 @@ class Config(object):
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dataset = "data/cornell_raw_min_680_tok"
+
+        self.label = ""
         
         # data hyperparameters
         self.min_token_occurrences = 20
@@ -13,7 +15,7 @@ class Config(object):
         self.emb_size = 100
         self.rnn_size = 500
 
-        self.LEARNING_METHOD = 0
+        self.LEARNING_METHOD = 1
         # 0: Supervised Learning
         # 1: Q-learning
         # 2: Supervised Learning and Q-learning
@@ -33,7 +35,7 @@ class Config(object):
         self.QUANTILES = 51 # if DISTRIBUTIONAL is true
 
         # Reward / Loss
-        self.value_penalty = False
+        self.value_penalty = True
         self.normalization_method = "sentence" # options: batch, sentence
         
         # Replay Memory
