@@ -111,7 +111,7 @@ class QLearning(object):
             mtl_steps = round(stop_pretrain_after / (pretrain_per + train_per))
         
         if schedule_by is not None:
-            mtl_steps = round((stop_pretrain_after - schedule_by) / (pretrain_per + train_per))
+            mtl_steps = round(schedule_by / (pretrain_per + train_per))
 
         logger.info(f"Starting Multitask Learning for {mtl_steps} steps with {pretrain_per} supervised steps and {train_per} q-learning steps")
 
