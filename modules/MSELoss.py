@@ -83,7 +83,7 @@ class MSELoss(onmt.utils.loss.LossComputeBase):
             if density_weights is not None:
                 # value penalty
                 loss = (loss * density_weights).transpose(1,2)
-                if weights is not None:
+                if weights is not None: # distributional rl with per
                     weights = weights.view(-1, 1, 1)
                     priorities = loss.detach().mean(2).sum(-1).sum(0)
                     if normalization_method == "sentence":
@@ -91,13 +91,20 @@ class MSELoss(onmt.utils.loss.LossComputeBase):
                     elif normalization_method == "batch":
                         loss = (loss * weights).mean(2).sum(-1).mean()
                     return loss, priorities
-                else: # TODO: implement distributional rl with plain er
-                    pass
+                else: # distributional rl with plain er
+                    if normalization_method == "sentence":
+                        loss = (loss.mean(2).sum(-1).sum(0) / tgt_lengths.float()).mean()
+                    elif normalization_method == "batch":
+                        loss = loss.mean(2).sum(-1).mean()
+                    return loss, None
             else: # TODO: implement value penalty
-                if weights is not None:
+                if weights is not None: # per
                     loss = loss.sum(dim=0).squeeze() * weights
-                loss = loss.sum()
-                return loss / float(normalization), None
+                if normalization_method == "sentence":
+                    loss = (loss / tgt_lengths.float()).mean()
+                elif normalization_method == "batch":
+                    loss = loss.mean()
+                return loss, None
         #batch_stats = onmt.utils.Statistics()
         for shard in shards(shard_state, shard_size): # TODO: implement sharding (!)
             #loss, stats

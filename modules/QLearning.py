@@ -243,7 +243,7 @@ class QLearning(object):
             #if self.gpu_verbose_level > 0:
             #    logger.info("GpuRank %d: reduce_counter: %d" % (self.gpu_rank, i + 1))
             
-            if step > self.config.PRETRAIN_ITER and step % self.config.SAMPLE_EVERY == 0:
+            if step > self.config.PRETRAIN_ITER and step % self.config.SAMPLE_EVERY == 1:
                 if mtl_offset != 0:
                     self._sample(mtl_offset + i)
                 else:

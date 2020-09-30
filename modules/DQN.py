@@ -49,11 +49,11 @@ class Generator(nn.Module):
             self.noisy_layers = [self.q_values]
             
     def forward(self, x):
+        batch_size = self.batch_size
+        if x.dim() == 2:
+            batch_size = x.size(0)
         if self.dueling:
             if self.distributional:
-                batch_size = self.batch_size
-                if x.dim() == 2:
-                    batch_size = x.size(0)
                 adv = self.advantages(x).view(-1, batch_size, self.tgt_vocab_size, self.quantiles)
                 val = self.value(x).view(-1, batch_size, 1, self.quantiles)
                 adv_mean = adv.mean(dim=2,keepdim=True)#.view(-1, self.batch_size, 1, self.quantiles)
@@ -62,8 +62,11 @@ class Generator(nn.Module):
                 adv = self.advantages(x)
                 val = self.value(x)            
                 return val + (adv - adv.mean(dim=-1, keepdim=True))
-        else: # TODO: Distributional for non-dueling networks
-            return self.q_values(x)  
+        else:
+            if self.distributional: # Distributional for non-dueling networks
+                return self.q_values(x).view(-1, batch_size, self.tgt_vocab_size, self.quantiles)
+            else:
+                return self.q_values(x)  
         
     def sample_noise(self, inplace = True):
         for noisy_layer in self.noisy_layers:

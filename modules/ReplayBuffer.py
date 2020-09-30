@@ -154,7 +154,8 @@ class ReplayBuffer(object):
             overflows the old memories are dropped.
         """
 
-        assert preloading_size <= size
+        if preloading_size > 0:
+            assert preloading_size <= size
         
         self._storage = []
         self._maxsize = size
@@ -166,7 +167,7 @@ class ReplayBuffer(object):
     
     def preload(self, src, tgt, reward):
         
-        assert len(self._storage) <= self._preloading_size
+        #assert len(self._storage) <= self._preloading_size
         
         data = (src, tgt, reward)
         self._storage.append(data)

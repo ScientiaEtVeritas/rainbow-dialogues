@@ -35,7 +35,7 @@ class Config(object):
         self.QUANTILES = 51 # if DISTRIBUTIONAL is true
 
         # Reward / Loss
-        self.value_penalty = True
+        self.value_penalty = False
         self.normalization_method = "sentence" # options: batch, sentence
         
         # Replay Memory

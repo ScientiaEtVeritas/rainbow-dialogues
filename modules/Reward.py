@@ -38,6 +38,8 @@ class Reward(object):
                     tgt_ = " ".join(str(x) for x in tgt_)
                     rouge_score = compute_rouge.get_scores([otp], [[tgt_]])['rouge-w']['f']
                     rewards[dj][ri] = rouge_score
+            else:
+                raise Exception("No reward given")
         
         # Weighting rewards
         rewards = (rewards * torch.Tensor(self.config.rewards_weights)).sum(dim=1)        

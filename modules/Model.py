@@ -96,4 +96,6 @@ class Model(object):
         os.makedirs(os.path.dirname(file), exist_ok=True)
         with open(file, 'a') as f:
             writer = csv.writer(f)
+            if isinstance(value, str):
+                value = value.encode('ascii', 'ignore').decode('ascii')
             writer.writerow((tstep, value))
